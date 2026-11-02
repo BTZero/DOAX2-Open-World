@@ -150,3 +150,24 @@ The stationary idle candidate now runs in the bounded pictorial trial.
 See [PICTORIAL_IDLE_TRIAL.md](PICTORIAL_IDLE_TRIAL.md) for native bank loading,
 four observed cycle starts, original-motion restoration, bank cleanup and
 the user's confirmation of visible idle admission. Beach Flags remains deferred.
+
+## Next step — paused at user request
+
+The user asked to pause work here. Resume only when requested. The next
+planned experiment is a short, controlled movement trial in the verified
+pictorial shell: retain the bounded hold and orbit, use left-stick input
+to move Kasumi within a small bounded area, and switch between the verified
+idle and a volleyball jogging candidate when input starts or stops. Restore
+the original scene on timeout or B. Validate the jogging candidate's resource
+binding and native movement behavior before enabling displacement.
+
+A distinct half-stick walking animation has not been established. Beach
+Flags remains deferred; no unlock work is planned. The completed hold,
+orbit and native idle checkpoint was pushed as commit `59e7fb2` on
+`feature/open-world`. This next movement trial had not been implemented at
+the paused checkpoint.
+
+Work has resumed at the user's request. Probe v20 adds a separate stationary
+left-stick idle/jog binding stage before displacement. See
+[PICTORIAL_MOVEMENT_TRIAL.md](PICTORIAL_MOVEMENT_TRIAL.md) for implementation,
+validation limits and the next runtime capture.

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Baseline','Probe','ProbeDisabled','TerrainTrial','RelaxationHoldTrial','PictorialResearch','PictorialHoldTrial','PictorialLifetimeTrial','PictorialCameraTrial','PictorialActorTrial','PictorialLongActorTrial','PictorialOrbitTrial','PictorialIdleBankTrial','PictorialIdleTrial','MotionResearch')][string]$Mode = 'Baseline',
+    [ValidateSet('Baseline','Probe','ProbeDisabled','TerrainTrial','RelaxationHoldTrial','PictorialResearch','PictorialHoldTrial','PictorialLifetimeTrial','PictorialCameraTrial','PictorialActorTrial','PictorialLongActorTrial','PictorialOrbitTrial','PictorialIdleBankTrial','PictorialIdleTrial','PictorialMovementTrial','MotionResearch')][string]$Mode = 'Baseline',
     [string]$BuildDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -34,7 +34,7 @@ $arguments = @(
     '--window_width=1280', '--window_height=720', '--resolution_scale=1',
     '--doax2_engine_60fps=false', '--doax2_native60_tick_scale=1',
     '--doax2_skip_intro_movies=true',
-    ('--doax2_pictorial_unlock=' + ($Mode -in @('PictorialResearch','PictorialHoldTrial','PictorialLifetimeTrial','PictorialCameraTrial','PictorialActorTrial','PictorialLongActorTrial','PictorialOrbitTrial','PictorialIdleBankTrial','PictorialIdleTrial')).ToString().ToLowerInvariant()),
+    ('--doax2_pictorial_unlock=' + ($Mode -in @('PictorialResearch','PictorialHoldTrial','PictorialLifetimeTrial','PictorialCameraTrial','PictorialActorTrial','PictorialLongActorTrial','PictorialOrbitTrial','PictorialIdleBankTrial','PictorialIdleTrial','PictorialMovementTrial')).ToString().ToLowerInvariant()),
     '--fullscreen=false', '--vsync=true', '--d3d12_vsync=false',
     '--execute_unclipped_draw_vs_on_cpu=true', '--execute_unclipped_draw_vs_on_cpu_with_scissor=true',
     '--d3d12_doax2_batch_uploads=true', '--d3d12_doax2_async_occlusion_query=true',
@@ -47,9 +47,10 @@ $arguments = @(
     '--keybind_rstick_left=J', '--keybind_rstick_right=L'
 )
 if ($Mode -ne 'Baseline') {
-    $arguments += '--doax2_open_world_probe=' + ($Mode -in @('Probe','TerrainTrial','RelaxationHoldTrial','PictorialResearch','PictorialHoldTrial','PictorialLifetimeTrial','PictorialCameraTrial','PictorialActorTrial','PictorialLongActorTrial','PictorialOrbitTrial','PictorialIdleBankTrial','PictorialIdleTrial','MotionResearch')).ToString().ToLowerInvariant()
+    $arguments += '--doax2_open_world_probe=' + ($Mode -in @('Probe','TerrainTrial','RelaxationHoldTrial','PictorialResearch','PictorialHoldTrial','PictorialLifetimeTrial','PictorialCameraTrial','PictorialActorTrial','PictorialLongActorTrial','PictorialOrbitTrial','PictorialIdleBankTrial','PictorialIdleTrial','PictorialMovementTrial','MotionResearch')).ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_pictorial_idle_bank_trial=' + ($Mode -eq 'PictorialIdleBankTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_pictorial_idle_trial=' + ($Mode -eq 'PictorialIdleTrial').ToString().ToLowerInvariant()
+    $arguments += '--doax2_open_world_pictorial_movement_trial=' + ($Mode -eq 'PictorialMovementTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_motion_research=' + ($Mode -eq 'MotionResearch').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_terrain_trial=' + ($Mode -eq 'TerrainTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_relaxation_hold_trial=' + ($Mode -eq 'RelaxationHoldTrial').ToString().ToLowerInvariant()

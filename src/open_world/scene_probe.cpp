@@ -71,6 +71,10 @@ REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_idle_trial, false, "DOAX2/OpenWor
                    "Fifteen-second native Kasumi idle with bounded orbit and native exit")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_movement_trial, false, "DOAX2/OpenWorld",
+                   "Stationary left-stick idle/jog binding test in scene 58; no displacement")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REX_EXTERN(sub_8266D040);
 REX_EXTERN(sub_8266D330);
 REX_EXTERN(__imp__sub_825160D0);
@@ -143,6 +147,8 @@ struct Trace {
   uint8_t idle_original_bank{}, idle_original_mirror{}, idle_original_flag73{};
   float idle_resume_phase{};
   uint32_t idle_loop_command{}, idle_loops{};
+  uint32_t trial_motion = 270;
+  uint64_t movement_input_frame = ~uint64_t{0};
   std::array<uint32_t, 4> rig_motion_identity{~0u, ~0u, ~0u, ~0u};
   std::array<uint32_t, 4> root_motion_identity{~0u, ~0u, ~0u, ~0u};
   std::array<uint64_t, 4> motion_rig_sample{~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}};
@@ -220,7 +226,7 @@ void Announce() {
   if (trace.announced) return;
   trace.announced = true;
   trace.started = std::chrono::steady_clock::now();
-  Log("OWPROBE v19 enabled: terrain_trial={} relaxation_hold_trial={} pictorial_unlock={} pictorial_hold_trial={} pictorial_lifetime_trial={} pictorial_camera_trial={} pictorial_actor_trial={} pictorial_long_actor_trial={} pictorial_orbit_trial={} motion_research={} idle_bank_trial={} idle_trial={}; raw guest identities; "
+  Log("OWPROBE v20 enabled: terrain_trial={} relaxation_hold_trial={} pictorial_unlock={} pictorial_hold_trial={} pictorial_lifetime_trial={} pictorial_camera_trial={} pictorial_actor_trial={} pictorial_long_actor_trial={} pictorial_orbit_trial={} motion_research={} idle_bank_trial={} idle_trial={} movement_binding_trial={}; raw guest identities; "
       "sample interval=30 updates line_limit={} thread={}",
       REXCVAR_GET(doax2_open_world_terrain_trial),
       REXCVAR_GET(doax2_open_world_relaxation_hold_trial),
@@ -233,7 +239,8 @@ void Announce() {
       REXCVAR_GET(doax2_open_world_pictorial_orbit_trial),
       REXCVAR_GET(doax2_open_world_motion_research),
       REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial),
-      REXCVAR_GET(doax2_open_world_pictorial_idle_trial), kLineLimit, GetCurrentThreadId());
+      REXCVAR_GET(doax2_open_world_pictorial_idle_trial),
+      REXCVAR_GET(doax2_open_world_pictorial_movement_trial), kLineLimit, GetCurrentThreadId());
 }
 }  // namespace
 
@@ -494,7 +501,7 @@ bool BankBoundToActiveActor(const uint8_t* base, uint32_t slot) {
   return false;
 }
 bool IdleActorExpected(const uint8_t* base, uint32_t motion) {
-  return motion == 27 || (trace.idle_actor_active && motion == 270 &&
+  return motion == 27 || (trace.idle_actor_active && motion == trace.trial_motion &&
       Readable(base, kPlayers, 152) && base[kPlayers + 4] == trace.idle_bank_slot);
 }
 bool IdleResourcesReady(const uint8_t* base) {
@@ -513,8 +520,61 @@ bool IdleResourcesReady(const uint8_t* base) {
       Read32(base, loop + 8, loop_tail) && loop_tail == 0x000A0003 &&
       Readable(base, loop + 12, 2) && base[loop + 12] == 0 && base[loop + 13] == 255;
 }
+bool JogResourcesReady(const uint8_t* base) {
+  uint32_t clips{}, clip{}, header{}, wrapper{}, scripts{}, command{}, first{}, second{};
+  // Shared motion 8223 uses index 31 independently of the character bank.
+  // Reject missing resources and the five-frame fallback clip.
+  return Read32(base, kMotionBanks + 8, clips) &&
+      Read32(base, clips + 31 * 4, clip) && Read32(base, clip, header) &&
+      (header >> 16) == 60 && (header & 0xFFFF) == 24 &&
+      Read32(base, kMotionBanks + 4, wrapper) && Read32(base, wrapper, scripts) &&
+      Read32(base, scripts + 31 * 4, command) &&
+      Read32(base, command, first) && first == 0x0000201F &&
+      Read32(base, command + 4, second) && second == 0x00010002;
+}
+void UpdateMovementBinding(uint8_t* base) {
+  if (!REXCVAR_GET(doax2_open_world_pictorial_movement_trial) ||
+      !trace.idle_actor_active || trace.movement_input_frame == trace.frame) return;
+  trace.movement_input_frame = trace.frame;
+  float x = 0, y = 0;
+  DWORD foreground_process{};
+  GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
+  if (auto* runtime = rex::Runtime::instance();
+      runtime && foreground_process == GetCurrentProcessId()) {
+    if (auto* input = dynamic_cast<rex::input::InputSystem*>(runtime->input_system())) {
+      rex::input::X_INPUT_STATE pad{};
+      if (input->GetState(0, &pad) == 0 &&
+          !(uint16_t(pad.gamepad.buttons) & (rex::input::X_INPUT_GAMEPAD_B |
+              rex::input::X_INPUT_GAMEPAD_START | rex::input::X_INPUT_GAMEPAD_BACK))) {
+        const auto normalize = [](int16_t v) { return float(v) / (v < 0 ? 32768.0f : 32767.0f); };
+        x = normalize(int16_t(pad.gamepad.thumb_lx));
+        y = normalize(int16_t(pad.gamepad.thumb_ly));
+      }
+    }
+  }
+  // Hysteresis avoids repeated rebinds near the radial deadzone. Input only
+  // selects animation in this resource-validation stage; roots stay held.
+  const float magnitude = std::min(1.0f, std::hypot(x, y));
+  const uint32_t desired = magnitude > (trace.trial_motion == 8223 ? 0.18f : 0.25f) ? 8223 : 270;
+  if (desired == trace.trial_motion || base[kPlayers + 56]) return;
+  if (desired == 8223 && !JogResourcesReady(base)) {
+    RestoreIdleActor(base);
+    Log("OWPROBE movement binding: rejected update={}; shared jog resource mismatch", trace.frame);
+    return;
+  }
+  uint32_t pair{};
+  if (!Read32(base, kPlayers + 52, pair)) return;
+  trace.trial_motion = desired;
+  REX_STORE_U32(kPlayers + 52, (desired << 16) | (pair & 0xFFFF));
+  base[kPlayers + 56] = 1;
+  base[kPlayers + 60] = 0;
+  base[kPlayers + 61] = 0;
+  Log("OWPROBE movement binding: request update={} motion={} stick=({:.3f},{:.3f}) magnitude={:.3f}; displacement disabled",
+      trace.frame, desired, x, y, magnitude);
+}
 void StartIdleActor(uint8_t* base) {
-  if (!REXCVAR_GET(doax2_open_world_pictorial_idle_trial) || trace.idle_actor_done ||
+  if ((!REXCVAR_GET(doax2_open_world_pictorial_idle_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_movement_trial)) || trace.idle_actor_done ||
       trace.idle_actor_active || !IdleResourcesReady(base) ||
       !Readable(base, kPlayers, 152)) return;
   uint32_t shared{}, scripts{}, loop{};
@@ -549,7 +609,7 @@ void RestoreIdleActor(uint8_t* base) {
   trace.idle_actor_done = true;
   uint32_t motion{};
   if (!Readable(base, kPlayers, 152) || base[kPlayers + 4] != trace.idle_bank_slot ||
-      !Read32(base, kPlayers + 52, motion) || motion >> 16 != 270) {
+      !Read32(base, kPlayers + 52, motion) || motion >> 16 != trace.trial_motion) {
     Log("OWPROBE idle actor: ownership changed update={}; native actor transition retained", trace.frame);
     return;
   }
@@ -572,7 +632,8 @@ void RestoreIdleActor(uint8_t* base) {
 void RequestIdleBank(uint8_t* base, PPCContext& ctx) {
   if (!REXCVAR_GET(doax2_open_world_probe) ||
       (!REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) &&
-       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial)) || trace.idle_bank_attempted) return;
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_movement_trial)) || trace.idle_bank_attempted) return;
   uint32_t phase{}, package_list{}, package{};
   if (!ReferencePictorial(base, phase) || phase != 4 ||
       !Read32(base, 0x82B2AC00 + 5 * 8, package_list) || package_list != 0x82B29F78 ||
@@ -653,9 +714,10 @@ IdleUpdateScope::IdleUpdateScope(uint8_t* base, uint32_t slot) {
     uint32_t phase{}, motion{};
     if (!trace.camera_hold_active || now >= trace.camera_hold_until ||
         !ReferencePictorial(base, phase) || phase != 7 ||
-        !Read32(base, kPlayers + 52, motion) || motion >> 16 != 270 ||
+        !Read32(base, kPlayers + 52, motion) || motion >> 16 != trace.trial_motion ||
         base[kPlayers + 4] != trace.idle_bank_slot) RestoreIdleActor(base);
   }
+  if (trace.idle_actor_active) UpdateMovementBinding(base);
   if (trace.idle_actor_restore) base_ = base;
 }
 IdleUpdateScope::~IdleUpdateScope() {
@@ -673,7 +735,7 @@ IdleUpdateScope::~IdleUpdateScope() {
 IdleCommandScope::IdleCommandScope(uint8_t* base, PPCContext& ctx) {
   uint32_t command{};
   if (!trace.idle_actor_active || ctx.r3.u32 || ctx.r4.u32 ||
-      !Read32(base, ctx.r5.u32, command) || command != 0x0000010E) return;
+      !Read32(base, ctx.r5.u32, command) || command != trace.trial_motion) return;
   base_ = base;
   ctx_ = &ctx;
 }
@@ -692,21 +754,29 @@ IdleCommandScope::~IdleCommandScope() {
     __imp__sub_825160D0(call, base_);
   }
   ++trace.idle_loops;
-  Log("OWPROBE idle actor: native cycle update={} cycle={} loop_state={} phase={:.3f}",
-      trace.frame, trace.idle_loops, base_[track + 130], FloatAt(base_, track + 52));
+  Log("OWPROBE idle actor: native cycle update={} cycle={} motion={} loop_state={} phase={:.3f}",
+      trace.frame, trace.idle_loops, trace.trial_motion, base_[track + 130], FloatAt(base_, track + 52));
 }
 void HoldIdleRoot(uint8_t* base, uint32_t slot) {
   if (slot || !trace.idle_actor_active || !trace.camera_hold_active ||
       !Readable(base, kPlayers, 152) || base[kPlayers + 4] != trace.idle_bank_slot) return;
   uint32_t phase{}, motion{};
   if (!ReferencePictorial(base, phase) || phase != 7 ||
-      !Read32(base, kPlayers + 52, motion) || motion >> 16 != 270 ||
+      !Read32(base, kPlayers + 52, motion) || motion >> 16 != trace.trial_motion ||
       !Readable(base, 0x83426FD0, 12)) return;
   if (trace.frame % 30 == 0)
     Log("OWPROBE idle actor: root held update={} raw_delta=({:.5f},{:.5f},{:.5f}) xyz=({:.4f},{:.4f},{:.4f}) phase={:.3f}",
         trace.frame, FloatAt(base, 0x83426FD0), FloatAt(base, 0x83426FD4), FloatAt(base, 0x83426FD8),
         FloatAt(base, kPlayers + 12), FloatAt(base, kPlayers + 16), FloatAt(base, kPlayers + 20),
         FloatAt(base, 0x834271A0 + 52));
+  if (REXCVAR_GET(doax2_open_world_pictorial_movement_trial) && trace.frame % 15 == 0) {
+    uint32_t native{};
+    Read32(base, 0x834271A0 + 108, native);
+    Log("OWPROBE movement binding: sample update={} requested={} native={} phase={:.3f} raw_delta=({:.5f},{:.5f},{:.5f}) xyz=({:.4f},{:.4f},{:.4f})",
+        trace.frame, trace.trial_motion, native >> 16, FloatAt(base, 0x834271A0 + 52),
+        FloatAt(base, 0x83426FD0), FloatAt(base, 0x83426FD4), FloatAt(base, 0x83426FD8),
+        FloatAt(base, kPlayers + 12), FloatAt(base, kPlayers + 16), FloatAt(base, kPlayers + 20));
+  }
   // The original root routine still runs once and consumes its delta. Do
   // not restore the consumed delta or write the actor's world transform.
   REX_STORE_U32(0x83426FD0, 0);
@@ -1055,7 +1125,8 @@ OrbitCameraScope::OrbitCameraScope(uint8_t* base, uint32_t object) {
   if (!REXCVAR_GET(doax2_open_world_probe) ||
       (!REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) &&
        !REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) &&
-       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial)) || trace.orbit_stopped) return;
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_movement_trial)) || trace.orbit_stopped) return;
   // AF08 is called for multiple camera objects in the same update. A call
   // for an unrelated object is not an ownership loss of the admitted one.
   if (!trace.camera_hold_object || object != trace.camera_hold_object) return;
@@ -1203,7 +1274,8 @@ CameraClockHoldScope::CameraClockHoldScope(uint8_t* base, uint32_t object) {
        !REXCVAR_GET(doax2_open_world_pictorial_long_actor_trial) &&
        !REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) &&
        !REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) &&
-       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial)) ||
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_movement_trial)) ||
       !trace.camera_hold_active || object != trace.camera_hold_object) return;
   const double now = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1380,7 +1452,8 @@ REX_HOOK_RAW(sub_824BC560) {
 REX_EXTERN(__imp__sub_824B9EA0);
 REX_HOOK_RAW(sub_824B9EA0) {
   using namespace doax2::open_world;
-  const bool idle_trial = REXCVAR_GET(doax2_open_world_pictorial_idle_trial);
+  const bool idle_trial = REXCVAR_GET(doax2_open_world_pictorial_idle_trial) ||
+                          REXCVAR_GET(doax2_open_world_pictorial_movement_trial);
   const bool long_actor_trial = REXCVAR_GET(doax2_open_world_pictorial_long_actor_trial) ||
                                 REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) ||
                                 REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) || idle_trial;

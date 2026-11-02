@@ -86,7 +86,7 @@ try {
         $banks = foreach ($bank in @(
             @{Name='character'; ScriptSlot=($bankRoot + 16 + $inspectBankIndex*64);
               ClipSlot=($bankRoot + 20 + $inspectBankIndex*64); IDs=@(27,270,271,272,273,274,275,541,543)},
-            @{Name='shared'; ScriptSlot=($bankRoot + 4); ClipSlot=($bankRoot + 8); IDs=@(0,1)}
+            @{Name='shared'; ScriptSlot=($bankRoot + 4); ClipSlot=($bankRoot + 8); IDs=@(0,1,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46)}
         )) {
             $wrapper = Read-MotionWord $bank.ScriptSlot
             $scripts = if ($wrapper) { Read-MotionWord $wrapper } else { $null }
