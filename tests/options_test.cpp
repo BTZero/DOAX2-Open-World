@@ -1,5 +1,6 @@
 #include "generated/default/doax2_pch.h"
 #include "src/doax2_options.h"
+#include "src/doax2_pictorial.h"
 
 #include <windows.h>
 #include <array>
@@ -15,6 +16,22 @@ void Check(bool condition) {
 }
 
 int main() {
+  for (uint32_t character = 0; character < 9; ++character) {
+    Check(doax2::PictorialCharacterCaller(character, 0x825A0110));
+    Check(doax2::PictorialCharacterCaller(character, 0x826EEA58));
+    Check(!doax2::PictorialCharacterCaller(character, 0));
+    for (uint32_t category = 0; category < 9; ++category) {
+      Check(doax2::PictorialClipCaller(character, category, 20, 21, 0x826EE050));
+      Check(doax2::PictorialClipCaller(character, category, 0, 21, 0x826EE468));
+      Check(!doax2::PictorialClipCaller(character, category, 21, 21, 0x826EE050));
+      Check(!doax2::PictorialClipCaller(character, category, 0, 0, 0x826EE050));
+      Check(!doax2::PictorialClipCaller(character, category, 0, 257, 0x826EE050));
+      Check(!doax2::PictorialClipCaller(character, category, 0, 21, 0));
+    }
+  }
+  Check(!doax2::PictorialCharacterCaller(9, 0x825A0110));
+  Check(!doax2::PictorialClipCaller(9, 0, 0, 21, 0x826EE050));
+  Check(!doax2::PictorialClipCaller(0, 9, 0, 21, 0x826EE050));
   // Reserve the guest address range, committing only the four physics slots.
   auto* base = static_cast<uint8_t*>(VirtualAlloc(nullptr, size_t{1} << 32,
                                                  MEM_RESERVE, PAGE_NOACCESS));

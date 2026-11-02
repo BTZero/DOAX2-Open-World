@@ -1,5 +1,32 @@
 # Runtime-only Virtual Pictorials access
 
+## Launcher access, 2026-11-02
+
+The normal game build now supports restart-required `doax2_pictorial_unlock=false`.
+Enable **Unlock Virtual Pictorials** in launcher Settings, then launch the game.
+The developer and tester launchers also expose the checkbox. This does not
+require a diagnostics build or enable the terrain/clock experiments. The older
+diagnostics-only flag below remains supported for existing research commands.
+
+Both modes share one scene-predicate hook. Character and caller bounds are
+covered by the host options test. Diagnostics-off and diagnostics-on builds
+compiled and linked successfully. A live diagnostics-on run using the normal
+unlock flag and the old unlock flag disabled confirmed the title entry, all
+nine portraits, 100% availability for Kasumi, native scene thumbnails, one
+Kasumi pictorial playing and its automatic return to the selector. The isolated
+`rds.dat` and `ups.dat` hashes were identical before and after that playback.
+This is representative coverage, not exhaustive playback of every character.
+
+That run also logged the startup legal-warning skip and both boot movie skips.
+The legal notice's open/poll/close calls are bypassed only at their verified
+startup callers; subsequent profile initialization continues normally.
+
+The research launch helper accepts `-BuildDirectory out/game` when that build
+was configured with `DOAX2_OPEN_WORLD_DIAGNOSTICS=ON`. It explicitly binds Y to
+R and X to F. Earlier helper launches inherited SDK Y=P, which made an R press
+ineffective. The window helper now captures correctly on scaled displays.
+See [PICTORIAL_LIFECYCLE.md](PICTORIAL_LIFECYCLE.md) for the resumed scene research.
+
 The diagnostics build now has restart-required CVar `doax2_open_world_pictorial_unlock=false`. It exposes the title entry, all nine characters and native scene lists without setting collection, ownership or viewed-scene flags. Normal builds omit the implementation; other research modes explicitly leave it disabled.
 
 ```powershell

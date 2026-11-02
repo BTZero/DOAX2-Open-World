@@ -63,6 +63,11 @@ the default). Changes apply immediately and save automatically in
 **Skip Startup Screens** in the launcher skips the legal warning, logos and
 intro movies. It is enabled by default; turn it off for the original startup.
 
+Enable **Unlock Virtual Pictorials** in launcher Settings before launching to
+browse all nine characters and their existing scenes from **Virtual Pictorials**
+in the main menu, without starting a vacation. This overrides availability at
+runtime and does not mark collections or scenes complete in your save.
+
 ## Updating
 
 From v1.1.3 on, the launcher can update itself:

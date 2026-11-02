@@ -1,11 +1,16 @@
 #pragma once
 
 #include <cstdint>
+struct PPCContext;
 
-// Observations only. These functions never change guest memory or PPC registers.
 // Call on the guest update thread; unavailable in ordinary builds.
+// Observe functions are read-only. The opt-in availability helpers override
+// predicate results, and ScriptCommandScope only observes native commands.
 namespace doax2::open_world {
 bool OverridePictorialUnlock(uint32_t character, uint32_t caller);
+void OverridePictorialClip(const uint8_t* base, PPCContext& ctx,
+                          uint32_t character, uint32_t category,
+                          uint32_t index, uint32_t caller);
 struct ScriptCommandScope {
   ScriptCommandScope(const uint8_t* base, uint32_t state, uint32_t handler);
   ~ScriptCommandScope();

@@ -15,6 +15,7 @@
 #include "doax2_native60_phase.h"
 #include "doax2_native60_keyframe.h"
 #include "doax2_options.h"
+#include "doax2_pictorial.h"
 
 #if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
 #include "open_world/scene_probe.h"
@@ -5048,6 +5049,33 @@ void Native60WriterProbeEnd(uint8_t* base, const char* name, const Native60Write
   Native60WatchRecord(name, watch_mask & ~native60_watch_child_wrote[state.depth]);
   native60_watch_child_wrote[state.depth - 1] |= watch_mask;
 }
+REXCVAR_DEFINE_BOOL(doax2_pictorial_unlock, false, "DOAX2",
+                    "Unlock Virtual Pictorials characters and scenes without changing save data")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+bool Doax2OverridePictorialCharacter(uint32_t character, uint32_t caller) {
+  if (REXCVAR_GET(doax2_pictorial_unlock) &&
+      doax2::PictorialCharacterCaller(character, caller)) return true;
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  return doax2::open_world::OverridePictorialUnlock(character, caller);
+#else
+  return false;
+#endif
+}
+
+REX_EXTERN(__imp__sub_826EE060);
+REX_HOOK_RAW(sub_826EE060) {
+  const uint32_t character = ctx.r4.u32, category = ctx.r5.u32;
+  const uint32_t index = ctx.r6.u32, caller = uint32_t(ctx.lr);
+  __imp__sub_826EE060(ctx, base);
+  if (REXCVAR_GET(doax2_pictorial_unlock) && character < 9 && category < 9 &&
+      doax2::PictorialClipCaller(character, category, index,
+          REX_LOAD_U32(0x82AA936C + category * 4), caller)) ctx.r3.u64 = 1;
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::OverridePictorialClip(base, ctx, character, category, index, caller);
+#endif
+}
+
 #define DOAX2_NATIVE60_POS_PROBE_IMPL(name, observation) \
   REX_EXTERN(__imp__##name); \
   REX_HOOK_RAW(name) { \
@@ -5592,15 +5620,11 @@ DOAX2_NATIVE60_POS_PROBE(sub_82410408)
 DOAX2_NATIVE60_POS_PROBE(sub_82410490)
 DOAX2_NATIVE60_POS_PROBE(sub_82410520)
 DOAX2_NATIVE60_POS_PROBE(sub_824105D0)
-#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
 DOAX2_NATIVE60_POS_PROBE_IMPL(sub_82410698,
-  if (doax2::open_world::OverridePictorialUnlock(ctx.r3.u32, uint32_t(ctx.lr))) {
+  if (Doax2OverridePictorialCharacter(ctx.r3.u32, uint32_t(ctx.lr))) {
     ctx.r3.u64 = 1;
     return;
   })
-#else
-DOAX2_NATIVE60_POS_PROBE(sub_82410698)
-#endif
 DOAX2_NATIVE60_POS_PROBE(sub_82410778)
 DOAX2_NATIVE60_POS_PROBE(sub_82410800)
 DOAX2_NATIVE60_POS_PROBE(sub_82410928)

@@ -112,6 +112,7 @@ struct Settings {
   bool diagnostics = false;
   bool keep_song = false;
   bool skip_intro_movies = true;
+  bool pictorial_unlock = false;
   int money_multiplier = 1;  // winnings x1 (original), x10, x15, x20, x100
   bool keyboard = true;
   std::array<std::array<std::string, 2>, kKeyActionCount> keys = [] {
@@ -273,6 +274,7 @@ Settings LoadSettings() {
   settings.diagnostics = ReadBool(values, "diagnostics", settings.diagnostics);
   settings.keep_song = ReadBool(values, "keep_song", settings.keep_song);
   settings.skip_intro_movies = ReadBool(values, "skip_intro_movies", settings.skip_intro_movies);
+  settings.pictorial_unlock = ReadBool(values, "pictorial_unlock", settings.pictorial_unlock);
   settings.money_multiplier = ReadInt(values, "money_multiplier", settings.money_multiplier);
   if (settings.money_multiplier != 10 && settings.money_multiplier != 15 && settings.money_multiplier != 20 &&
       settings.money_multiplier != 100)
@@ -316,6 +318,7 @@ void SaveSettings() {
          << "diagnostics=" << (s.diagnostics ? "true" : "false") << '\n'
          << "keep_song=" << (s.keep_song ? "true" : "false") << '\n'
          << "skip_intro_movies=" << (s.skip_intro_movies ? "true" : "false") << '\n'
+         << "pictorial_unlock=" << (s.pictorial_unlock ? "true" : "false") << '\n'
          << "money_multiplier=" << s.money_multiplier << '\n'
          << "keyboard=" << (s.keyboard ? "true" : "false") << '\n';
   for (size_t i = 0; i < kKeyActionCount; ++i)
@@ -594,6 +597,7 @@ void Launch(HWND window) {
       + L" --doax2_native60_counter_scan=" + true_false(s.diagnostics)
       + L" --xmp_keep_song_across_playlists=" + true_false(s.keep_song)
       + L" --doax2_skip_intro_movies=" + true_false(s.skip_intro_movies)
+      + L" --doax2_pictorial_unlock=" + true_false(s.pictorial_unlock)
       + L" --doax2_money_multiplier=" + std::to_wstring(s.money_multiplier)
       // Keyboard as a controller (merged with any connected pad); no mouse look.
       + L" --mnk_mode=" + true_false(s.keyboard) + L" --mnk_mouse=false";
@@ -1746,6 +1750,11 @@ void PaintSubPage(Graphics& g, const wchar_t* title, const std::vector<Row>& row
 void PaintSettings(Graphics& g) {
   Settings& s = g_settings;
   std::vector<Row> rows = {
+      {L"Unlock Virtual Pictorials",
+       L"Browse all nine characters and their existing pictorial scenes from the main menu, "
+       L"without starting a vacation.\n\n"
+       L"Applies when you launch the game. Does not mark collections or scenes complete in your save.",
+       [&s](Graphics& g, const RectF& r) { DrawToggle(g, ToggleRect(r), &s.pictorial_unlock); }},
       {L"Skip Startup Screens",
        L"Skip the legal warning, opening logos and intro movies automatically. On by default.\n\n"
        L"Turn this off to watch the original startup sequence.",
@@ -1782,7 +1791,7 @@ void PaintSettings(Graphics& g) {
        L"is one). Never share game files.",
        [](Graphics& g, const RectF& r) { DrawButton(g, r, L"OPEN LOGS FOLDER", 24, OpenLogsFolder); }},
   };
-  PaintSubPage(g, L"SETTINGS", rows, RowStyle{100, 36, 0, true});
+  PaintSubPage(g, L"SETTINGS", rows, RowStyle{86, 36, 0, true});
 }
 
 void PaintGraphics(Graphics& g) {

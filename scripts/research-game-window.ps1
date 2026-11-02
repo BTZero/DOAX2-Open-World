@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)][int]$ProcessId,
     [Parameter(Mandatory)][ValidateSet('Capture', 'Key', 'Close', 'Status')][string]$Action,
     [ValidateSet('Return','Space','Backspace','Tab','Escape','Up','Down','Left','Right',
-                 'W','A','S','D','I','J','K','L','Q','E','R','F')][string]$Key = 'Return',
+                 'W','A','S','D','I','J','K','L','Q','E','R','F','P')][string]$Key = 'Return',
     [ValidateRange(40,2000)][int]$HoldMilliseconds = 120,
     [switch]$SnapshotWhileHeld
 )
@@ -28,6 +28,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class ResearchGameWindow {
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT {
@@ -57,6 +58,7 @@ public static class ResearchGameWindow {
     }
 }
 '@
+[ResearchGameWindow]::SetProcessDPIAware() | Out-Null
 if ($Action -eq 'Close') {
     if (-not [ResearchGameWindow]::PostMessage($window, 0x10, [IntPtr]::Zero, [IntPtr]::Zero)) {
         throw 'Unable to request normal game-window shutdown.'

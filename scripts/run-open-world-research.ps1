@@ -1,9 +1,17 @@
 [CmdletBinding()]
-param([ValidateSet('Baseline','Probe','ProbeDisabled','TerrainTrial','RelaxationHoldTrial','PictorialResearch')][string]$Mode = 'Baseline')
+param(
+    [ValidateSet('Baseline','Probe','ProbeDisabled','TerrainTrial','RelaxationHoldTrial','PictorialResearch')][string]$Mode = 'Baseline',
+    [string]$BuildDirectory = ''
+)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $buildName = if ($Mode -eq 'Baseline') { 'open-world-baseline' } else { 'open-world-probe' }
-$gameExe = Join-Path $projectRoot "out/$buildName/doax2.exe"
+$buildRoot = if ($BuildDirectory) { [IO.Path]::GetFullPath((Join-Path $projectRoot $BuildDirectory)) } else { Join-Path $projectRoot "out/$buildName" }
+$outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'out')) + [IO.Path]::DirectorySeparatorChar
+if (-not $buildRoot.StartsWith($outputRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Research build must be inside the workspace out directory.'
+}
+$gameExe = Join-Path $buildRoot 'doax2.exe'
 $gameRoot = Join-Path $projectRoot 'extracted game files here'
 $researchRoot = Join-Path $projectRoot 'out/open-world-research'
 $userRoot = Join-Path $researchRoot 'userdata'
@@ -25,10 +33,13 @@ $arguments = @(
     '--video_mode_refresh_rate=60', '--video_mode_width=1280', '--video_mode_height=720',
     '--window_width=1280', '--window_height=720', '--resolution_scale=1',
     '--doax2_engine_60fps=false', '--doax2_native60_tick_scale=1',
+    '--doax2_skip_intro_movies=true',
+    ('--doax2_pictorial_unlock=' + ($Mode -eq 'PictorialResearch').ToString().ToLowerInvariant()),
     '--fullscreen=false', '--vsync=true', '--d3d12_vsync=false',
     '--execute_unclipped_draw_vs_on_cpu=true', '--execute_unclipped_draw_vs_on_cpu_with_scissor=true',
     '--d3d12_doax2_batch_uploads=true', '--d3d12_doax2_async_occlusion_query=true',
     '--mnk_mode=true', '--mnk_mouse=false', '--keybind_a=Space', '--keybind_b=Backspace',
+    '--keybind_x=F', '--keybind_y=R',
     '--keybind_start=Return', '--keybind_back=Tab',
     '--keybind_dpad_up=Up', '--keybind_dpad_down=Down',
     '--keybind_dpad_left=Left', '--keybind_dpad_right=Right',
@@ -39,7 +50,7 @@ if ($Mode -ne 'Baseline') {
     $arguments += '--doax2_open_world_probe=' + ($Mode -in @('Probe','TerrainTrial','RelaxationHoldTrial','PictorialResearch')).ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_terrain_trial=' + ($Mode -eq 'TerrainTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_relaxation_hold_trial=' + ($Mode -eq 'RelaxationHoldTrial').ToString().ToLowerInvariant()
-    $arguments += '--doax2_open_world_pictorial_unlock=' + ($Mode -eq 'PictorialResearch').ToString().ToLowerInvariant()
+    $arguments += '--doax2_open_world_pictorial_unlock=false'
 }
 $started = Start-Process -FilePath $gameExe -ArgumentList $arguments -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru
 $session = [pscustomobject]@{

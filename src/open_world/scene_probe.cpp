@@ -72,6 +72,7 @@ struct Trace {
   uint64_t rig_sample[4]{~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}};
   bool terrain_query_trial{};
   uint32_t relaxation_phase = ~0u;
+  uint32_t pictorial_phase = ~0u;
   uint32_t script_commands{};
   uint32_t pictorial_unlock_seen{};
   uint32_t pictorial_clips_seen[9]{};
@@ -268,6 +269,35 @@ void ObserveFrame(const uint8_t* base) {
   // independent frame boundary too, without waiting for that callback to return.
   ObserveScreen(base, "frame");
   // Screen 7's verified descriptor passes this state block as r4 to
+  // Title screen 2 retains its descriptor during pictorial playback. Its
+  // nested controller 826F0540 owns phases 4..10 for scene load/play/return.
+  // These fixed fields were checked against a live phase-7 image snapshot.
+  if (trace.screen.id == 2 && trace.screen.table == 0x82B83C80 &&
+      trace.screen.callback == 0x825A2270) {
+    uint32_t phase{}, selected{}, scene_id{}, camera_index{};
+    constexpr uint32_t state = 0x83DA3D98;
+    if (Read32(base, state + 89788, phase) && phase <= 11 &&
+        Read32(base, state + 89140, selected)) {
+      const bool have_scene = phase >= 4 && phase <= 10 &&
+          selected >= state && uint64_t(selected) + 4 <= uint64_t(state) + 89788 &&
+          Read32(base, selected, scene_id);
+      if (phase != trace.pictorial_phase || trace.frame % 30 == 0) {
+        uint32_t actor_mask{};
+        for (uint32_t slot = 0; slot < 4; ++slot) {
+          if (Readable(base, kPlayers + slot * 152 + 10, 1) &&
+              base[kPlayers + slot * 152 + 10]) actor_mask |= 1u << slot;
+        }
+        Read32(base, kScene + 968, camera_index);
+        Log("OWPROBE pictorial: update={} screen_state={} phase={} selected={:08X} "
+            "scene_valid={} scene_id={} script_frame={:.3f} actor_update_mask={:X} camera_index={}",
+            trace.frame, trace.screen.state, phase, selected, have_scene,
+            have_scene ? scene_id : ~0u, FloatAt(base, 0x833B4C68 + 28), actor_mask, camera_index);
+      }
+      trace.pictorial_phase = phase;
+    }
+  } else {
+    trace.pictorial_phase = ~0u;
+  }
   // 826E2618 -> 826E2EE8. Observe its native state machine, never hold or
   // advance it. The same numeric screen ID in another table is unrelated.
   if (trace.screen.id == 7 && trace.screen.table == 0x82AACFD0 &&
@@ -530,14 +560,6 @@ REX_EXTERN(__imp__sub_824BC560);
 REX_HOOK_RAW(sub_824BC560) {
   doax2::open_world::ScriptCommandScope observation(base, ctx.r3.u32, 0x824BC560);
   __imp__sub_824BC560(ctx, base);
-}
-
-REX_EXTERN(__imp__sub_826EE060);
-REX_HOOK_RAW(sub_826EE060) {
-  const uint32_t character = ctx.r4.u32, category = ctx.r5.u32;
-  const uint32_t index = ctx.r6.u32, caller = uint32_t(ctx.lr);
-  __imp__sub_826EE060(ctx, base);
-  doax2::open_world::OverridePictorialClip(base, ctx, character, category, index, caller);
 }
 
 // A finite lifetime experiment, confined to the verified script object and
