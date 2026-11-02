@@ -14,6 +14,7 @@
 #include "doax2_fps_telemetry.h"
 #include "doax2_native60_phase.h"
 #include "doax2_native60_keyframe.h"
+#include "doax2_options.h"
 
 #include <bit>
 #include <fstream>
@@ -3921,6 +3922,7 @@ REX_HOOK_RAW(sub_826CAAA8) {
 }
 
 void ReportNative60GameStep(uint8_t* base) {
+  Doax2ObserveOptions(base);
   native60_popup_scan::Update(base);
   Native60SlideSmoothing();
   Native60SlideOutroTrace(base);
@@ -7576,6 +7578,37 @@ DOAX2_NATIVE60_BISECT_HOOK(sub_82513158, 5)
 // 2 = playing, 3 = play end). Boot sequence: ninja_vi_hd.sfd (Team Ninja
 // logo) then promotion_video.sfd. While one of those (or opening.sfd) plays, Start or A (any pad), Enter or Space makes the status
 // query report play end once, so the game moves on as if the movie ended.
+REXCVAR_DEFINE_BOOL(doax2_skip_intro_movies, true, "DOAX2",
+                    "Skip startup movies and the legal warning automatically")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// Startup 8250AA48 opens the legal notice, polls its fade/input wait, then
+// closes it before continuing with save/profile initialization. Bypass only
+// those three call sites, leaving the remainder of startup and other fades
+// intact. Do not fake controller input that could carry into the title menu.
+REX_EXTERN(__imp__sub_824D5F08);
+REX_HOOK_RAW(sub_824D5F08) {
+  if (REXCVAR_GET(doax2_skip_intro_movies) && uint32_t(ctx.lr) == 0x8250AAAC) {
+    REXLOG_INFO("DOAX2 startup legal warning skipped");
+    return;
+  }
+  __imp__sub_824D5F08(ctx, base);
+}
+REX_EXTERN(__imp__sub_824D6238);
+REX_HOOK_RAW(sub_824D6238) {
+  const uint32_t caller = uint32_t(ctx.lr);
+  if (REXCVAR_GET(doax2_skip_intro_movies) &&
+      (caller == 0x8250AAB4 || caller == 0x8250AAEC)) {
+    ctx.r3.u64 = 1;
+    return;
+  }
+  __imp__sub_824D6238(ctx, base);
+}
+REX_EXTERN(__imp__sub_824D6160);
+REX_HOOK_RAW(sub_824D6160) {
+  if (REXCVAR_GET(doax2_skip_intro_movies) && uint32_t(ctx.lr) == 0x8250AAFC) return;
+  __imp__sub_824D6160(ctx, base);
+}
 namespace native60_fmv {
 inline std::mutex mutex;
 inline std::map<uint32_t, std::string> names;  // handle -> file name
@@ -7664,6 +7697,14 @@ REX_HOOK_RAW(sub_829BD948) {
     start = native60_fmv::started[handle];
   }
   if (!native60_fmv::IsBootMovie(name)) return;
+  if (REXCVAR_GET(doax2_skip_intro_movies)) {
+    std::lock_guard lock(native60_fmv::mutex);
+    native60_fmv::skipped.insert(handle);
+    REXLOG_INFO("DOAX2 movie automatically skipped: {}", name);
+    native60_movie_event_ms = Native60NowMs();
+    ctx.r3.u64 = 3;
+    return;
+  }
   // Ignore a button still held from the warning screen.
   static bool released = false;
   const bool pressed = native60_fmv::SkipPressed();
@@ -8468,6 +8509,7 @@ REX_EXTERN(__imp__sub_825B3E10);
 REX_EXTERN(__imp__sub_8248A348);
 REX_HOOK_RAW(sub_8248A348) {
   const uint32_t slot = ctx.r3.u32;
+  const Doax2JiggleInputs jiggle_inputs(base, slot);
   if (!REXCVAR_GET(doax2_render_queue_probe) || slot >= 4) {
     __imp__sub_8248A348(ctx, base); return;
   }

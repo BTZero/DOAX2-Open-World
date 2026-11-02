@@ -16,6 +16,7 @@ include(generated/rexglue.cmake)
 set(DOAX2_SOURCES
     src/main.cpp
     src/doax2_60fps.cpp
+    src/doax2_options.cpp
 )
 
 if(WIN32)
@@ -92,6 +93,12 @@ set_tests_properties(doax2_title_playlist PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 if(WIN32)
+    add_executable(doax2_options_test EXCLUDE_FROM_ALL tests/options_test.cpp src/doax2_options.cpp)
+    target_include_directories(doax2_options_test PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_link_libraries(doax2_options_test PRIVATE rex::runtime)
+    rexglue_apply_target_settings(doax2_options_test)
+    add_test(NAME doax2_options COMMAND doax2_options_test)
+
     add_executable(doax2_frame_bank_gpu_test EXCLUDE_FROM_ALL tests/frame_bank_gpu_test.cpp)
     target_link_libraries(doax2_frame_bank_gpu_test PRIVATE d3d12 dxgi)
 endif()

@@ -55,6 +55,14 @@ Title updates are not supported.
 
 Saves are written to the `userdata` folder next to the launcher.
 
+In the game's main menu, open **Options** to adjust **Jiggle Physics** with
+the mouse. The slider runs from **0%** (off) to **100%** (original strength,
+the default). Changes apply immediately and save automatically in
+`userdata/recomp-options.ini`.
+
+**Skip Startup Screens** in the launcher skips the legal warning, logos and
+intro movies. It is enabled by default; turn it off for the original startup.
+
 ## Updating
 
 From v1.1.3 on, the launcher can update itself:
