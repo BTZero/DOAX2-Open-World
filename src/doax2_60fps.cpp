@@ -4251,6 +4251,9 @@ REX_HOOK_RAW(sub_8241A630) {
   const auto camera_before = SnapshotNative60Camera(base);
   const bool probe = REXCVAR_GET(doax2_time_source_probe);
   const uint32_t object = ctx.r3.u32;
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::CameraClockHoldScope camera_clock_hold(base, object);
+#endif
   const uint32_t timeline_before = probe ? REX_LOAD_U32(object + 3540) : 0;
   const uint32_t active = probe ? REX_LOAD_U32(object + 3620) : 0;
   const uint32_t mode = probe ? REX_LOAD_U32(object + 3580) : 0;
@@ -4288,6 +4291,9 @@ REX_EXTERN(__imp__sub_8241D038);
 REX_HOOK_RAW(sub_8241D038) {
   Native60WriterProbeScope native60_probe_scope(base, "sub_8241D038");
   const uint32_t object = ctx.r3.u32;
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::CameraScriptScope camera_observation(base, object);
+#endif
   const bool correct = REXCVAR_GET(doax2_native60_scene_timeline_half) &&
                        IsNative60SceneObject(base, object);
   const uint32_t before_bits = correct ? REX_LOAD_U32(object + 3540) : 0;
@@ -4390,7 +4396,14 @@ REX_HOOK_RAW(sub_8241AF08) {
         auxiliary_cross_mask |= 1u << i;
     }
   }
-  __imp__sub_8241AF08(ctx, base);
+  {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+    // The native60 observation helper intentionally returns zero when its
+    // own flags are off. The orbit validates the actual incoming object.
+    doax2::open_world::OrbitCameraScope orbit_camera(base, ctx.r3.u32);
+#endif
+    __imp__sub_8241AF08(ctx, base);
+  }
   ReportNative60ObjectCamera(base, "sub_8241AF08", object, before, 12);
   if (!object) return;
   ++selected_calls;
@@ -5220,7 +5233,12 @@ DOAX2_NATIVE60_POS_PROBE(sub_8250A568)
 DOAX2_NATIVE60_POS_PROBE(sub_8250A728)
 DOAX2_NATIVE60_POS_PROBE(sub_8250BEB0)
 DOAX2_NATIVE60_POS_PROBE(sub_8250D530)
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+DOAX2_NATIVE60_POS_PROBE_IMPL(sub_8250D5F8,
+  doax2::open_world::IdleUpdateScope idle_update(base, ctx.r3.u32);)
+#else
 DOAX2_NATIVE60_POS_PROBE(sub_8250D5F8)
+#endif
 DOAX2_NATIVE60_POS_PROBE(sub_8250D7A0)
 DOAX2_NATIVE60_POS_PROBE(sub_8250DCF0)
 DOAX2_NATIVE60_POS_PROBE(sub_8250DF88)
@@ -5230,7 +5248,12 @@ DOAX2_NATIVE60_POS_PROBE(sub_8250EAB0)
 DOAX2_NATIVE60_POS_PROBE(sub_8250F890)
 DOAX2_NATIVE60_POS_PROBE(sub_8250FA38)
 DOAX2_NATIVE60_POS_PROBE(sub_8250FC50)
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+DOAX2_NATIVE60_POS_PROBE_IMPL(sub_8250FE28,
+  doax2::open_world::ActorClockHoldScope actor_clock_hold(base, ctx.r3.u32, ctx.r4.u32);)
+#else
 DOAX2_NATIVE60_POS_PROBE(sub_8250FE28)
+#endif
 // Root-motion step 82510218(player): adds the animation's root-motion delta
 // for this update (83426FD0 + player*116: local x/y/z, cleared afterwards),
 // rotated by the facing, to the player position (833B8520 + player*152
@@ -5244,6 +5267,10 @@ DOAX2_NATIVE60_POS_PROBE(sub_8250FE28)
 inline std::atomic<uint64_t> native60_flags_frame{~0ull};
 REX_EXTERN(__imp__sub_82510218);
 REX_HOOK_RAW(sub_82510218) {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::RootMotionScope root_observation(base, ctx.r3.u32);
+  doax2::open_world::HoldIdleRoot(base, ctx.r3.u32);
+#endif
   struct Player {
     float last_x = 0, last_z = 0;
     std::array<float, 3> steps{};
@@ -5335,7 +5362,12 @@ DOAX2_NATIVE60_POS_PROBE(sub_82513058)
 DOAX2_NATIVE60_POS_PROBE(sub_82513430)
 DOAX2_NATIVE60_POS_PROBE(sub_82515748)
 DOAX2_NATIVE60_POS_PROBE(sub_82515F30)
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+DOAX2_NATIVE60_POS_PROBE_IMPL(sub_825160D0,
+  doax2::open_world::IdleCommandScope idle_command(base, ctx);)
+#else
 DOAX2_NATIVE60_POS_PROBE(sub_825160D0)
+#endif
 DOAX2_NATIVE60_POS_PROBE(sub_82517928)
 DOAX2_NATIVE60_POS_PROBE(sub_82517DA8)
 DOAX2_NATIVE60_POS_PROBE(sub_82517F48)
@@ -7630,10 +7662,12 @@ REX_HOOK_RAW(sub_82513158) {
   if (Native60IntroBisectSkip(base, 5)) return;
 #if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
   const uint32_t observed_slot = ctx.r3.u32;
+  doax2::open_world::ObservePictorialMotion(base, observed_slot, false);
 #endif
   __imp__sub_82513158(ctx, base);
 #if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
   doax2::open_world::ObserveRig(base, observed_slot);
+  doax2::open_world::ObservePictorialMotion(base, observed_slot, true);
 #endif
 }
 
@@ -7910,6 +7944,10 @@ REX_HOOK_RAW(sub_82687B38) {
 // Log every volleyball motion start with its caller and the ball clock.
 REX_EXTERN(__imp__sub_8268DAE8);
 REX_HOOK_RAW(sub_8268DAE8) {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::VolleyballMotionScope motion_observation(
+      base, ctx.r3.u32, ctx.r4.u32 & 0xFFFF, ctx.f1.f64, uint32_t(ctx.lr));
+#endif
   const uint32_t state = ctx.r3.u32;
   const uint32_t motion = ctx.r4.u32 & 0xFFFF;
   const uint32_t player = state >= 0x833B8520 && state < 0x833B8520 + 4 * 152
@@ -9204,6 +9242,7 @@ REX_HOOK_RAW(sub_8258E500) {
   __imp__sub_8258E500(ctx, base);
 #if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
   doax2::open_world::ObserveFrame(base);
+  doax2::open_world::MaintainIdleBank(base, ctx);
 #endif
   Native60SceneIndexCheck(base, "sub_8258E500", native60_index_before_sub_8258E500);
   ReportNative60GameStep(base);

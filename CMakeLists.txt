@@ -87,6 +87,10 @@ target_link_libraries(stfs_extract PRIVATE rex::runtime)
 rexglue_apply_target_settings(stfs_extract)
 
 # Pure host-side capture tests; no game data or runtime initialization needed.
+add_executable(doax2_finite_hold_test EXCLUDE_FROM_ALL tests/finite_hold_test.cpp)
+add_test(NAME doax2_finite_hold COMMAND doax2_finite_hold_test)
+add_executable(doax2_orbit_camera_test EXCLUDE_FROM_ALL tests/orbit_camera_test.cpp)
+add_test(NAME doax2_orbit_camera COMMAND doax2_orbit_camera_test)
 add_executable(doax2_render_history_test EXCLUDE_FROM_ALL tests/render_history_test.cpp)
 add_executable(doax2_render_operation_sequence_test EXCLUDE_FROM_ALL tests/render_operation_sequence_test.cpp)
 add_test(NAME doax2_render_operation_sequence COMMAND doax2_render_operation_sequence_test)

@@ -82,3 +82,47 @@ The game was closed normally after return. The observer compiled, linked and
 executed successfully. Explicit-stop behavior, other scene IDs and Niki-specific
 resource ownership remain future checks; this does not establish independent
 actor spawning, movement or free-roam acceptance.
+
+## User-operated Niki reference, scene 58
+
+The user identified and selected the Kasumi/Niki Beach reference thumbnail.
+Tracing run `pictorialresearch-20261102-153623-522.log`, PID 13172, identified
+native scene ID 58 at record `0x83DA61BC`. The user played it without input
+and reported completion. The trace recorded:
+
+- Update 1462: phase 4; update 1477: phase 5; update 1503: phase 6.
+- Update 1516: opcode 28 at `0x82C2F702`, operand `0xFFF1`, enabled player
+  slot 0 (update mask 0 to 1) with identity mapping (0,1,2,3).
+- At that update, opcode 85 at `0x82C2F70A` selected camera preset 99;
+  camera selector stayed 0. Opcode 31 at `0x82C2F746` set slot-0 motion 27,
+  with the other three slots retaining sentinel motion 8192.
+- Update 1518: phase 7, script frame 2, actor mask 1, camera selector 0.
+- Update 2492: phase 8 at script frame 976. Update 2507: phase 9 at frame
+  990 with actor mask 0; update 2508: phase 10; update 2523: phase 1 restored.
+
+Both isolated save payload hashes matched their pre-test hashes. No calendar
+advance was logged during playback. This establishes a repeatable, user-selected
+scene entry and automatic return with native actor/motion commands observed.
+Motion 27 is a scene binding, not yet a verified generic looping idle or walk.
+The location name is user-identified; its stage resource association still
+needs tracing.
+
+The user then replayed scene 58, requested an early exit, and reported return
+to the selector with no issues. The second entry repeated the same three
+activation/camera/motion commands at update 4374. Playback phase 7 began at
+update 4376, frame 2. The requested exit entered phase 8 at update 4707,
+frame 333 (about 11 seconds into playback), rather than waiting for the
+990-frame ending. Cleanup reached phase 9 at update 4722, frame 347, with
+actor mask 0, then phase 10 at 4723 and selector phase 1 at 4738. The outer
+title screen stayed active. Both save payload hashes remained unchanged and
+no calendar advance was logged. Normal completion and requested exit thus
+share the observed native cleanup phases, with successful same-scene re-entry.
+This is two runs, not a resource-leak or repeated-entry soak test.
+
+The detailed script-command probe now admits this verified pictorial owner
+only during phases 5..8 as well as the existing vacation owner. It resets the
+128-command allowance when a new pictorial load begins, so another scene can
+be compared in the same session. The dedicated `out/open-world-probe` build
+compiled and linked; these two user-operated runs validated the new command
+coverage. `Launch Pictorial Research.cmd` starts that build with tracing and
+runtime unlock enabled, retaining isolated user data.

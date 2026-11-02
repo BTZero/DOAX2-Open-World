@@ -1,8 +1,11 @@
 #include "scene_probe.h"
+#include "finite_hold.h"
+#include "orbit_camera.h"
 
 #include "generated/default/doax2_pch.h"
 
 #include <array>
+#include <algorithm>
 #include <bit>
 #include <chrono>
 #include <cstring>
@@ -20,6 +23,8 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/hook.h>
+#include <rex/runtime.h>
+#include <rex/input/input_system.h>
 
 REXCVAR_DEFINE_BOOL(doax2_open_world_probe, false, "DOAX2/OpenWorld",
                    "Read-only scene research trace; requires a diagnostics build")
@@ -33,6 +38,42 @@ REXCVAR_DEFINE_BOOL(doax2_open_world_relaxation_hold_trial, false, "DOAX2/OpenWo
 REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_unlock, false, "DOAX2/OpenWorld",
                    "Expose virtual pictorial characters and clips for research without changing ownership")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_hold_trial, false, "DOAX2/OpenWorld",
+                   "Five-second script wait hold in the verified pictorial scene 58 only")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_lifetime_trial, false, "DOAX2/OpenWorld",
+                   "Hold scene 58 script and outer lifetime clocks together for five seconds")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_camera_trial, false, "DOAX2/OpenWorld",
+                   "Five-second coordinated scene/camera clock hold in pictorial scene 58")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_actor_trial, false, "DOAX2/OpenWorld",
+                   "Five-second coordinated scene/camera/actor clock trial in scene 58")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_long_actor_trial, false, "DOAX2/OpenWorld",
+                   "Fifteen-second coordinated scene/camera/actor clock trial in scene 58")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_orbit_trial, false, "DOAX2/OpenWorld",
+                   "Bounded right-stick camera orbit during scene 58 fifteen-second actor hold")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(doax2_open_world_motion_research, false, "DOAX2/OpenWorld",
+                   "Read-only native motion selection, track and root-displacement research")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_idle_bank_trial, false, "DOAX2/OpenWorld",
+                   "Load and release a spare native Kasumi idle bank without rebinding the actor")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_idle_trial, false, "DOAX2/OpenWorld",
+                   "Fifteen-second native Kasumi idle with bounded orbit and native exit")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REX_EXTERN(sub_8266D040);
+REX_EXTERN(sub_8266D330);
+REX_EXTERN(__imp__sub_825160D0);
 
 namespace doax2::open_world {
 namespace {
@@ -57,6 +98,7 @@ struct Screen {
 struct Activity {
   uint32_t argument{};
   uint64_t calls{};
+  uint64_t last_update = ~uint64_t{0};
 };
 struct Trace {
   uint64_t frame{};
@@ -74,14 +116,47 @@ struct Trace {
   uint32_t relaxation_phase = ~0u;
   uint32_t pictorial_phase = ~0u;
   uint32_t script_commands{};
+  uint32_t camera_events{};
+  std::array<uint32_t, 8> motion_identity{};
+  uint32_t motion_events{};
+  uint64_t motion_sample = ~uint64_t{0};
+  bool have_motion{};
+  uint64_t camera_sample = ~uint64_t{0};
   uint32_t pictorial_unlock_seen{};
   uint32_t pictorial_clips_seen[9]{};
   bool hold_started{}, hold_released{};
+  FiniteScriptHold pictorial_hold;
+  float pictorial_elapsed_anchor{};
+  bool camera_hold_active{};
+  uint32_t camera_hold_object{};
+  double camera_hold_until{};
+  uint32_t camera_hold_calls{};
+  OrbitCamera orbit;
+  bool orbit_started{}, orbit_stopped{};
+  uint64_t orbit_frame = ~uint64_t{0};
+  double orbit_time{};
+  uint32_t motion_research_events{};
+  bool idle_bank_attempted{}, idle_bank_owned{}, idle_bank_ready{};
+  uint32_t idle_bank_slot = ~0u;
+  bool idle_actor_active{}, idle_actor_restore{}, idle_actor_done{};
+  uint32_t idle_original_motion{}, idle_original_rate{}, idle_original_step{}, idle_original_seek{};
+  uint8_t idle_original_bank{}, idle_original_mirror{}, idle_original_flag73{};
+  float idle_resume_phase{};
+  uint32_t idle_loop_command{}, idle_loops{};
+  std::array<uint32_t, 4> rig_motion_identity{~0u, ~0u, ~0u, ~0u};
+  std::array<uint32_t, 4> root_motion_identity{~0u, ~0u, ~0u, ~0u};
+  std::array<uint64_t, 4> motion_rig_sample{~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}};
+  std::array<uint64_t, 4> root_sample{~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}};
   float hold_frame{};
   std::chrono::steady_clock::time_point hold_started_at{};
   std::chrono::steady_clock::time_point started{};
 };
 thread_local Trace trace;
+uint32_t ActorUpdateMask(const uint8_t* base);
+bool IdleActorExpected(const uint8_t* base, uint32_t motion);
+void StartIdleActor(uint8_t* base);
+void RestoreIdleActor(uint8_t* base);
+bool IdleResourcesReady(const uint8_t* base);
 
 bool Enabled() {
   return REXCVAR_GET(doax2_open_world_probe) && trace.lines <= kLineLimit;
@@ -145,11 +220,20 @@ void Announce() {
   if (trace.announced) return;
   trace.announced = true;
   trace.started = std::chrono::steady_clock::now();
-  Log("OWPROBE v7 enabled: terrain_trial={} relaxation_hold_trial={} pictorial_unlock={}; raw guest identities; "
+  Log("OWPROBE v19 enabled: terrain_trial={} relaxation_hold_trial={} pictorial_unlock={} pictorial_hold_trial={} pictorial_lifetime_trial={} pictorial_camera_trial={} pictorial_actor_trial={} pictorial_long_actor_trial={} pictorial_orbit_trial={} motion_research={} idle_bank_trial={} idle_trial={}; raw guest identities; "
       "sample interval=30 updates line_limit={} thread={}",
       REXCVAR_GET(doax2_open_world_terrain_trial),
       REXCVAR_GET(doax2_open_world_relaxation_hold_trial),
-      REXCVAR_GET(doax2_open_world_pictorial_unlock), kLineLimit, GetCurrentThreadId());
+      REXCVAR_GET(doax2_open_world_pictorial_unlock),
+      REXCVAR_GET(doax2_open_world_pictorial_hold_trial),
+      REXCVAR_GET(doax2_open_world_pictorial_lifetime_trial),
+      REXCVAR_GET(doax2_open_world_pictorial_camera_trial),
+      REXCVAR_GET(doax2_open_world_pictorial_actor_trial),
+      REXCVAR_GET(doax2_open_world_pictorial_long_actor_trial),
+      REXCVAR_GET(doax2_open_world_pictorial_orbit_trial),
+      REXCVAR_GET(doax2_open_world_motion_research),
+      REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial),
+      REXCVAR_GET(doax2_open_world_pictorial_idle_trial), kLineLimit, GetCurrentThreadId());
 }
 }  // namespace
 
@@ -257,6 +341,7 @@ void ObserveActivity(uint32_t function, uint32_t argument) {
     if (function != kActivities[i]) continue;
     trace.activities[i].argument = argument;
     ++trace.activities[i].calls;
+    trace.activities[i].last_update = trace.frame;
     return;
   }
 }
@@ -268,7 +353,6 @@ void ObserveFrame(const uint8_t* base) {
   // Some screen initializers yield while a UI is active. Observe from the
   // independent frame boundary too, without waiting for that callback to return.
   ObserveScreen(base, "frame");
-  // Screen 7's verified descriptor passes this state block as r4 to
   // Title screen 2 retains its descriptor during pictorial playback. Its
   // nested controller 826F0540 owns phases 4..10 for scene load/play/return.
   // These fixed fields were checked against a live phase-7 image snapshot.
@@ -282,6 +366,14 @@ void ObserveFrame(const uint8_t* base) {
           selected >= state && uint64_t(selected) + 4 <= uint64_t(state) + 89788 &&
           Read32(base, selected, scene_id);
       if (phase != trace.pictorial_phase || trace.frame % 30 == 0) {
+        if (phase == 4 && phase != trace.pictorial_phase) {
+          trace.script_commands = 0;
+          trace.camera_events = 0;
+          trace.motion_events = 0;
+          trace.have_motion = false;
+          trace.motion_sample = ~uint64_t{0};
+          trace.camera_sample = ~uint64_t{0};
+        }
         uint32_t actor_mask{};
         for (uint32_t slot = 0; slot < 4; ++slot) {
           if (Readable(base, kPlayers + slot * 152 + 10, 1) &&
@@ -289,9 +381,10 @@ void ObserveFrame(const uint8_t* base) {
         }
         Read32(base, kScene + 968, camera_index);
         Log("OWPROBE pictorial: update={} screen_state={} phase={} selected={:08X} "
-            "scene_valid={} scene_id={} script_frame={:.3f} actor_update_mask={:X} camera_index={}",
+            "scene_valid={} scene_id={} script_frame={:.3f} actor_update_mask={:X} camera_index={} script_elapsed={:.3f}",
             trace.frame, trace.screen.state, phase, selected, have_scene,
-            have_scene ? scene_id : ~0u, FloatAt(base, 0x833B4C68 + 28), actor_mask, camera_index);
+            have_scene ? scene_id : ~0u, FloatAt(base, 0x833B4C68 + 28), actor_mask, camera_index,
+            FloatAt(base, 0x833B4C68 + 24));
       }
       trace.pictorial_phase = phase;
     }
@@ -380,6 +473,254 @@ void ObserveFrame(const uint8_t* base) {
 }
 }  // namespace doax2::open_world
 
+namespace doax2::open_world {
+namespace {
+constexpr uint32_t kMotionManager = 0x839472D8;
+constexpr uint32_t kMotionBanks = 0x833B87A8;
+bool ReferencePictorial(const uint8_t* base, uint32_t& phase) {
+  uint32_t table{}, state{}, record{}, scene{};
+  return Readable(base, kScreen, 1) && base[kScreen] == 2 &&
+      Read32(base, kScreen + 68, table) && table == 0x82B83C80 &&
+      Read32(base, kScreen + 40, state) && state == 1 &&
+      Read32(base, 0x83DB99CC, record) && record == 0x83DA61BC &&
+      Read32(base, record, scene) && scene == 58 &&
+      Read32(base, 0x83DB9C54, phase);
+}
+bool BankBoundToActiveActor(const uint8_t* base, uint32_t slot) {
+  for (uint32_t i = 0; i < 4; ++i) {
+    const uint32_t player = kPlayers + i * 152;
+    if (!Readable(base, player, 152) || (base[player + 10] && base[player + 4] == slot)) return true;
+  }
+  return false;
+}
+bool IdleActorExpected(const uint8_t* base, uint32_t motion) {
+  return motion == 27 || (trace.idle_actor_active && motion == 270 &&
+      Readable(base, kPlayers, 152) && base[kPlayers + 4] == trace.idle_bank_slot);
+}
+bool IdleResourcesReady(const uint8_t* base) {
+  if (!trace.idle_bank_ready || trace.idle_bank_slot >= 4) return false;
+  uint32_t clips{}, clip{}, header{}, wrapper{}, scripts{}, command{}, first{}, second{};
+  uint32_t shared{}, shared_scripts{}, loop{}, loop_head{}, loop_middle{}, loop_tail{};
+  return Read32(base, kMotionBanks + 20 + trace.idle_bank_slot * 64, clips) &&
+      Read32(base, clips + 270 * 4, clip) && Read32(base, clip, header) && header == 0x003C0073 &&
+      Read32(base, kMotionBanks + 16 + trace.idle_bank_slot * 64, wrapper) &&
+      Read32(base, wrapper, scripts) && Read32(base, scripts + 270 * 4, command) &&
+      Read32(base, command, first) && first == 0x0000010E &&
+      Read32(base, command + 4, second) && second == 0x00010002 &&
+      Read32(base, kMotionBanks + 4, shared) && Read32(base, shared, shared_scripts) &&
+      Read32(base, shared_scripts + 4, loop) && Read32(base, loop, loop_head) && loop_head == 0x00002001 &&
+      Read32(base, loop + 4, loop_middle) && loop_middle == 0x00010002 &&
+      Read32(base, loop + 8, loop_tail) && loop_tail == 0x000A0003 &&
+      Readable(base, loop + 12, 2) && base[loop + 12] == 0 && base[loop + 13] == 255;
+}
+void StartIdleActor(uint8_t* base) {
+  if (!REXCVAR_GET(doax2_open_world_pictorial_idle_trial) || trace.idle_actor_done ||
+      trace.idle_actor_active || !IdleResourcesReady(base) ||
+      !Readable(base, kPlayers, 152)) return;
+  uint32_t shared{}, scripts{}, loop{};
+  if (!Read32(base, kPlayers + 52, trace.idle_original_motion) ||
+      trace.idle_original_motion >> 16 != 27 ||
+      !Read32(base, kPlayers + 48, trace.idle_original_rate) ||
+      !Read32(base, kPlayers + 44, trace.idle_original_step) ||
+      !Read32(base, kPlayers + 116, trace.idle_original_seek) || trace.idle_original_seek ||
+      !Read32(base, kMotionBanks + 4, shared) || !Read32(base, shared, scripts) ||
+      !Read32(base, scripts + 4, loop)) return;
+  trace.idle_resume_phase = FloatAt(base, 0x834271A0 + 52);
+  if (!std::isfinite(trace.idle_resume_phase) || trace.idle_resume_phase < 1 || trace.idle_resume_phase > 120) return;
+  trace.idle_original_bank = base[kPlayers + 4];
+  trace.idle_original_mirror = base[kPlayers + 58];
+  trace.idle_original_flag73 = base[kPlayers + 73];
+  trace.idle_loop_command = loop + 10;
+  trace.idle_actor_active = true;
+  base[kPlayers + 4] = uint8_t(trace.idle_bank_slot);
+  REX_STORE_U32(kPlayers + 52, (270u << 16) | (trace.idle_original_motion & 0xFFFF));
+  REX_STORE_U32(kPlayers + 48, std::bit_cast<uint32_t>(1.0f));
+  REX_STORE_U32(kPlayers + 44, std::bit_cast<uint32_t>(1.0f));
+  base[kPlayers + 56] = 1;  // Native primary-motion request, as in 826923A0.
+  base[kPlayers + 58] = 0;
+  base[kPlayers + 60] = 0;
+  base[kPlayers + 61] = 0;
+  Log("OWPROBE idle actor: begin update={} bank={} motion=270 resume_bank={} resume_phase={:.3f}",
+      trace.frame, trace.idle_bank_slot, trace.idle_original_bank, trace.idle_resume_phase);
+}
+void RestoreIdleActor(uint8_t* base) {
+  if (!trace.idle_actor_active) return;
+  trace.idle_actor_active = false;
+  trace.idle_actor_done = true;
+  uint32_t motion{};
+  if (!Readable(base, kPlayers, 152) || base[kPlayers + 4] != trace.idle_bank_slot ||
+      !Read32(base, kPlayers + 52, motion) || motion >> 16 != 270) {
+    Log("OWPROBE idle actor: ownership changed update={}; native actor transition retained", trace.frame);
+    return;
+  }
+  // Request the original clip through the native binder with its supported
+  // one-shot seek. Never restore stale track/resource pointers.
+  trace.idle_actor_restore = true;
+  base[kPlayers + 4] = trace.idle_original_bank;
+  REX_STORE_U32(kPlayers + 52, trace.idle_original_motion);
+  REX_STORE_U32(kPlayers + 48, trace.idle_original_rate);
+  REX_STORE_U32(kPlayers + 44, trace.idle_original_step);
+  REX_STORE_U32(kPlayers + 116, std::bit_cast<uint32_t>(trace.idle_resume_phase));
+  base[kPlayers + 56] = 1;
+  base[kPlayers + 58] = trace.idle_original_mirror;
+  base[kPlayers + 60] = 0;
+  base[kPlayers + 61] = 0;
+  base[kPlayers + 73] = trace.idle_original_flag73;
+  Log("OWPROBE idle actor: restore requested update={} bank={} motion=27 phase={:.3f} loops={}",
+      trace.frame, trace.idle_original_bank, trace.idle_resume_phase, trace.idle_loops);
+}
+void RequestIdleBank(uint8_t* base, PPCContext& ctx) {
+  if (!REXCVAR_GET(doax2_open_world_probe) ||
+      (!REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial)) || trace.idle_bank_attempted) return;
+  uint32_t phase{}, package_list{}, package{};
+  if (!ReferencePictorial(base, phase) || phase != 4 ||
+      !Read32(base, 0x82B2AC00 + 5 * 8, package_list) || package_list != 0x82B29F78 ||
+      !Read32(base, package_list, package) || package != 0x01BE01BF) return;
+  trace.idle_bank_attempted = true;
+  // Only claim an entirely empty native slot. Never evict selector caches
+  // or change the bank of an actor in this resource-only experiment.
+  for (uint32_t slot = 1; slot < 4; ++slot) {
+    const uint32_t state = kMotionManager + 200 + slot * 16;
+    uint32_t script_handle{}, clip_handle{};
+    if (!Readable(base, state, 16) || base[state] != 255 || base[state + 2] ||
+        base[state + 3] != 255 || base[state + 4] != 255 ||
+        base[state + 6] != 255 || base[state + 7] != 255 ||
+        BankBoundToActiveActor(base, slot) ||
+        !Read32(base, kMotionBanks + 16 + slot * 64, script_handle) ||
+        !Read32(base, kMotionBanks + 20 + slot * 64, clip_handle) ||
+        !script_handle || !clip_handle || !Readable(base, script_handle, 4) ||
+        !Readable(base, clip_handle, 4)) continue;
+    auto call = ctx;
+    call.r3.u64 = slot;
+    call.r4.u64 = 5;  // Verified reference Kasumi variant.
+    call.r5.u64 = 0;  // Native default package at 82B29F78: assets 446/447.
+    call.r6.u64 = 255;
+    sub_8266D040(call, base);
+    trace.idle_bank_owned = call.r3.u32 == 1;
+    trace.idle_bank_slot = slot;
+    Log("OWPROBE idle bank: request update={} slot={} accepted={} character=5 package=0 actor_bank={}",
+        trace.frame, slot, trace.idle_bank_owned, base[kPlayers + 4]);
+    return;
+  }
+  Log("OWPROBE idle bank: declined update={}; no entirely empty unbound bank", trace.frame);
+}
+}  // namespace
+
+void MaintainIdleBank(uint8_t* base, PPCContext& ctx) {
+  if (!trace.idle_bank_owned) return;
+  const uint32_t slot = trace.idle_bank_slot;
+  const uint32_t state = kMotionManager + 200 + slot * 16;
+  if (!Readable(base, state, 16)) return;
+  const bool loaded = base[state] == 255 && base[state + 6] == 5 && base[state + 7] == 0;
+  if (loaded && !trace.idle_bank_ready) {
+    trace.idle_bank_ready = true;
+    uint32_t clips{};
+    Read32(base, kMotionBanks + 20 + slot * 64, clips);
+    Log("OWPROBE idle bank: ready update={} slot={} clips={:08X}; actor binding unchanged", trace.frame, slot, clips);
+    for (uint32_t id = 270; id <= 275; ++id) {
+      uint32_t clip{}, header{};
+      const bool valid = clips && Read32(base, clips + id * 4, clip) && clip && Read32(base, clip, header);
+      Log("OWPROBE idle bank: clip update={} slot={} id={} valid={} pointer={:08X} header={:08X}",
+          trace.frame, slot, id, valid, clip, header);
+    }
+  }
+  uint32_t phase{};
+  const bool reference = ReferencePictorial(base, phase);
+  if (trace.idle_actor_active && (!reference || phase != 7 || !trace.camera_hold_active)) RestoreIdleActor(base);
+  if (trace.idle_actor_restore && ActorUpdateMask(base) == 0 && Readable(base, kPlayers, 152) &&
+      base[kPlayers + 4] == trace.idle_original_bank) {
+    REX_STORE_U32(kPlayers + 116, trace.idle_original_seek);
+    trace.idle_actor_restore = false;
+    Log("OWPROBE idle actor: inactive cleanup update={}; no active track uses spare bank", trace.frame);
+  }
+  // Let the native asynchronous request complete before releasing it. The
+  // actor never uses this bank, so release cannot invalidate its rig tracks.
+  if (!loaded || trace.idle_actor_active || trace.idle_actor_restore ||
+      (reference && phase >= 4 && phase <= 7) || BankBoundToActiveActor(base, slot)) return;
+  auto call = ctx;
+  call.r3.u64 = slot;
+  sub_8266D330(call, base);
+  trace.idle_bank_owned = false;
+  Log("OWPROBE idle bank: released update={} slot={} phase={} state={} loaded_character={} loaded_package={}",
+      trace.frame, slot, phase, base[state], base[state + 6], base[state + 7]);
+}
+IdleUpdateScope::IdleUpdateScope(uint8_t* base, uint32_t slot) {
+  if (slot != 0) return;
+  if (trace.idle_actor_active) {
+    const double now = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    uint32_t phase{}, motion{};
+    if (!trace.camera_hold_active || now >= trace.camera_hold_until ||
+        !ReferencePictorial(base, phase) || phase != 7 ||
+        !Read32(base, kPlayers + 52, motion) || motion >> 16 != 270 ||
+        base[kPlayers + 4] != trace.idle_bank_slot) RestoreIdleActor(base);
+  }
+  if (trace.idle_actor_restore) base_ = base;
+}
+IdleUpdateScope::~IdleUpdateScope() {
+  if (!base_ || !trace.idle_actor_restore) return;
+  uint32_t native_motion{};
+  if (!Read32(base_, 0x834271A0 + 108, native_motion) || native_motion >> 16 != 27 ||
+      base_[kPlayers + 4] != trace.idle_original_bank || base_[kPlayers + 56] ||
+      FloatAt(base_, 0x834271A0 + 52) < trace.idle_resume_phase) return;
+  auto* base = base_;
+  REX_STORE_U32(kPlayers + 116, trace.idle_original_seek);
+  trace.idle_actor_restore = false;
+  Log("OWPROBE idle actor: restored update={} native_phase={:.3f}; one-shot seek cleared", trace.frame,
+      FloatAt(base, 0x834271A0 + 52));
+}
+IdleCommandScope::IdleCommandScope(uint8_t* base, PPCContext& ctx) {
+  uint32_t command{};
+  if (!trace.idle_actor_active || ctx.r3.u32 || ctx.r4.u32 ||
+      !Read32(base, ctx.r5.u32, command) || command != 0x0000010E) return;
+  base_ = base;
+  ctx_ = &ctx;
+}
+IdleCommandScope::~IdleCommandScope() {
+  if (!base_ || !trace.idle_actor_active) return;
+  uint32_t track{};
+  if (!Read32(base_, 0x83426FCC, track) || track != 0x834271A0 ||
+      !Readable(base_, track, 144) || base_[kPlayers + 4] != trace.idle_bank_slot) return;
+  // Reuse the verified native opcode-3 command in shared entry 1. The real
+  // idle script is otherwise interpreted untouched, including face cues.
+  if (base_[track + 130] == 0) {
+    auto call = *ctx_;
+    call.r3.u64 = 0;
+    call.r4.u64 = 0;
+    call.r5.u64 = trace.idle_loop_command;
+    __imp__sub_825160D0(call, base_);
+  }
+  ++trace.idle_loops;
+  Log("OWPROBE idle actor: native cycle update={} cycle={} loop_state={} phase={:.3f}",
+      trace.frame, trace.idle_loops, base_[track + 130], FloatAt(base_, track + 52));
+}
+void HoldIdleRoot(uint8_t* base, uint32_t slot) {
+  if (slot || !trace.idle_actor_active || !trace.camera_hold_active ||
+      !Readable(base, kPlayers, 152) || base[kPlayers + 4] != trace.idle_bank_slot) return;
+  uint32_t phase{}, motion{};
+  if (!ReferencePictorial(base, phase) || phase != 7 ||
+      !Read32(base, kPlayers + 52, motion) || motion >> 16 != 270 ||
+      !Readable(base, 0x83426FD0, 12)) return;
+  if (trace.frame % 30 == 0)
+    Log("OWPROBE idle actor: root held update={} raw_delta=({:.5f},{:.5f},{:.5f}) xyz=({:.4f},{:.4f},{:.4f}) phase={:.3f}",
+        trace.frame, FloatAt(base, 0x83426FD0), FloatAt(base, 0x83426FD4), FloatAt(base, 0x83426FD8),
+        FloatAt(base, kPlayers + 12), FloatAt(base, kPlayers + 16), FloatAt(base, kPlayers + 20),
+        FloatAt(base, 0x834271A0 + 52));
+  // The original root routine still runs once and consumes its delta. Do
+  // not restore the consumed delta or write the actor's world transform.
+  REX_STORE_U32(0x83426FD0, 0);
+  REX_STORE_U32(0x83426FD4, 0);
+  REX_STORE_U32(0x83426FD8, 0);
+}
+}  // namespace doax2::open_world
+
+REX_EXTERN(__imp__sub_824BF888);
+REX_HOOK_RAW(sub_824BF888) {
+  __imp__sub_824BF888(ctx, base);
+  doax2::open_world::RequestIdleBank(base, ctx);
+}
+
 // Newly verified generated functions; these wrappers only record requests and
 // invoke each original exactly once. They are absent from ordinary builds.
 REX_EXTERN(__imp__sub_825A15D8);
@@ -465,10 +806,118 @@ REX_HOOK_RAW(sub_825BAD40) {
   __imp__sub_825BAD40(ctx, base);
 }
 
+namespace doax2::open_world {
+namespace {
+bool MotionResearch() {
+  if (!Enabled() || !REXCVAR_GET(doax2_open_world_motion_research) ||
+      trace.motion_research_events >= 1600) return false;
+  // Spend the observation allowance only while volleyball or Beach Flags
+  // is actually updating, not on title/selector character previews.
+  for (uint32_t i = 0; i < 2; ++i) {
+    const auto last = trace.activities[i].last_update;
+    if (last != ~uint64_t{0} && trace.frame >= last && trace.frame - last <= 1) return true;
+  }
+  return false;
+}
+uint32_t HalfAt(const uint8_t* base, uint32_t address) {
+  uint32_t word{};
+  return Read32(base, address & ~3u, word) ?
+      ((word >> ((address & 2) ? 0 : 16)) & 0xFFFF) : ~0u;
+}
+void ObserveNativeMotion(const uint8_t* base, uint32_t slot) {
+  if (!MotionResearch() || slot >= 4) return;
+  const uint32_t player = kPlayers + slot * 152;
+  if (!Readable(base, player, 152)) return;
+  uint32_t identity{};
+  if (!Read32(base, player + 52, identity)) return;
+  const bool changed = identity != trace.rig_motion_identity[slot];
+  if (!changed && (trace.frame % 30 || trace.motion_rig_sample[slot] == trace.frame)) return;
+  trace.rig_motion_identity[slot] = identity;
+  trace.motion_rig_sample[slot] = trace.frame;
+  ++trace.motion_research_events;
+  uint32_t resource{}, facing{};
+  Read32(base, 0x83426FD0 + slot * 116 + 24, resource);
+  Read32(base, player + 24, facing);
+  const uint32_t track = 0x834271A0 + slot * 2 * 144;
+  const bool have_track = Readable(base, track, 288);
+  Log("OWPROBE motion rig: update={} screen={} slot={} changed={} character_byte1={} byte0={} enabled={} native52={} native54={} high64={} queued66={} category62={} flags60={:02X} phase44={:.3f} rate48={:.3f} xyz=({:.4f},{:.4f},{:.4f}) facing={} resource={:08X} track_phase=({:.3f},{:.3f}) track_end=({},{}) track_flags=({:08X},{:08X})",
+      trace.frame, trace.screen.id, slot, changed, base[player + 1], base[player], base[player + 10],
+      identity >> 16, identity & 0xFFFF, HalfAt(base, player + 64), HalfAt(base, player + 66),
+      base[player + 62], base[player + 60], FloatAt(base, player + 44), FloatAt(base, player + 48),
+      FloatAt(base, player + 12), FloatAt(base, player + 16), FloatAt(base, player + 20), facing, resource,
+      have_track ? FloatAt(base, track + 52) : -1.0f,
+      have_track ? FloatAt(base, track + 144 + 52) : -1.0f,
+      have_track ? HalfAt(base, track + 112) : ~0u,
+      have_track ? HalfAt(base, track + 144 + 112) : ~0u,
+      have_track ? uint32_t(base[track + 124]) << 24 | uint32_t(base[track + 125]) << 16 |
+          uint32_t(base[track + 126]) << 8 | base[track + 127] : 0,
+      have_track ? uint32_t(base[track + 268]) << 24 | uint32_t(base[track + 269]) << 16 |
+          uint32_t(base[track + 270]) << 8 | base[track + 271] : 0);
+}
+}  // namespace
+
+VolleyballMotionScope::VolleyballMotionScope(const uint8_t* base, uint32_t player,
+                                             uint32_t motion, double rate, uint32_t caller) {
+  if (!MotionResearch() || player < kPlayers || player >= kPlayers + 4 * 152 ||
+      (player - kPlayers) % 152 || motion == 0xFFFF || !Readable(base, player, 152)) return;
+  base_ = base;
+  player_ = player;
+  motion_ = motion;
+  caller_ = caller;
+  rate_ = rate;
+  before_ = HalfAt(base, player + 64);
+}
+
+VolleyballMotionScope::~VolleyballMotionScope() {
+  if (!base_ || !MotionResearch()) return;
+  const uint32_t slot = (player_ - kPlayers) / 152;
+  ++trace.motion_research_events;
+  // Read only the eight native metadata words actually addressed by this
+  // request. Do not treat raw IDs or successor entries as semantic clip names.
+  std::array<uint32_t, 8> row{};
+  const uint32_t at = 0x82B11F68 + motion_ * 32;
+  bool have_row = true;
+  for (uint32_t i = 0; i < row.size(); ++i) have_row &= Read32(base_, at + i * 4, row[i]);
+  Log("OWPROBE volleyball motion request: update={} screen={} slot={} character_byte1={} caller={:08X} high={}->{} actual_high={} native52={} native54={} rate={} table_valid={} category={} row_id={} row_native={} row_next={} words8_28=({:08X},{:08X},{:08X},{:08X},{:08X},{:08X})",
+      trace.frame, trace.screen.id, slot, base_[player_ + 1], caller_, before_, motion_,
+      HalfAt(base_, player_ + 64), HalfAt(base_, player_ + 52), HalfAt(base_, player_ + 54), rate_,
+      have_row, row[0] >> 16, row[0] & 0xFFFF, row[1] >> 16, row[1] & 0xFFFF,
+      row[2], row[3], row[4], row[5], row[6], row[7]);
+}
+
+RootMotionScope::RootMotionScope(const uint8_t* base, uint32_t slot) {
+  if (!MotionResearch() || slot >= 4) return;
+  const uint32_t player = kPlayers + slot * 152;
+  uint32_t motion{};
+  if (!Readable(base, player, 152) || !Read32(base, player + 52, motion)) return;
+  const bool changed = motion != trace.root_motion_identity[slot];
+  if (!changed && (trace.frame % 30 || trace.root_sample[slot] == trace.frame)) return;
+  trace.root_motion_identity[slot] = motion;
+  trace.root_sample[slot] = trace.frame;
+  base_ = base;
+  slot_ = slot;
+  motion_ = motion >> 16;
+  for (uint32_t i = 0; i < 3; ++i) {
+    before_[i] = FloatAt(base, player + 12 + i * 4);
+    delta_[i] = FloatAt(base, 0x83426FD0 + slot * 116 + i * 4);
+  }
+}
+RootMotionScope::~RootMotionScope() {
+  if (!base_ || !MotionResearch()) return;
+  const uint32_t player = kPlayers + slot_ * 152;
+  ++trace.motion_research_events;
+  Log("OWPROBE root step: update={} screen={} slot={} native52={} delta_local=({:.5f},{:.5f},{:.5f}) applied_xyz=({:.5f},{:.5f},{:.5f}) flags93={} phase44={:.3f}",
+      trace.frame, trace.screen.id, slot_, motion_, delta_[0], delta_[1], delta_[2],
+      FloatAt(base_, player + 12) - before_[0], FloatAt(base_, player + 16) - before_[1],
+      FloatAt(base_, player + 20) - before_[2], base_[player + 93], FloatAt(base_, player + 44));
+}
+}  // namespace doax2::open_world
+
 // The native rig pipeline calls the height method, then animation/rig services.
 // Slot validity is established by observing this actual native call, not by
 // inferring occupancy from nonzero coordinates in a cached player record.
 void doax2::open_world::ObserveRig(const uint8_t* base, uint32_t slot) {
+  ObserveNativeMotion(base, slot);
   const bool observe = Enabled() && slot < 4 && trace.frame % 30 == 0 &&
       trace.rig_sample[slot] != trace.frame;
   if (observe) trace.rig_sample[slot] = trace.frame;
@@ -484,8 +933,92 @@ void doax2::open_world::ObserveRig(const uint8_t* base, uint32_t slot) {
   }
 }
 
+// Observe the actual native rig boundary. Raw offset labels deliberately avoid
+// interpreting a resource-bank selector as a verified animation identity.
+void doax2::open_world::ObservePictorialMotion(const uint8_t* base, uint32_t slot,
+                                             bool after) {
+  if (!Enabled() || slot != 0 || trace.motion_events >= 256) return;
+  uint32_t table{}, state{}, callback{}, phase{}, selected{}, scene{};
+  if (!Readable(base, kScreen, 1) || base[kScreen] != 2 ||
+      !Read32(base, kScreen + 68, table) || table != 0x82B83C80 ||
+      !Read32(base, table + 2 * 36 + 4, callback) || callback != 0x825A2270 ||
+      !Read32(base, kScreen + 40, state) || state != 1 ||
+      !Read32(base, 0x83DB9C54, phase) || phase < 5 || phase > 8 ||
+      !Read32(base, 0x83DB99CC, selected) || selected != 0x83DA61BC ||
+      !Read32(base, selected, scene) || scene != 58) return;
+  std::array<uint32_t, 8> identity{};
+  // Fixed player record: motion pair and adjacent native control bytes/words.
+  constexpr std::array<uint32_t, 5> fields{52, 56, 60, 64, 92};
+  for (size_t i = 0; i < fields.size(); ++i)
+    if (!Read32(base, kPlayers + fields[i], identity[i])) return;
+  if (!Read32(base, 0x83426FD0 + 24, identity[5])) return;
+  // 82513158 obtains this resource pointer from the fixed slot table.
+  // Read the bounded record only; never follow its nested resource pointers.
+  if (!identity[5] || !Readable(base, identity[5], 136) ||
+      !Read32(base, identity[5] + 108, identity[6]) ||
+      !Read32(base, identity[5] + 112, identity[7])) return;
+  // The native rig buffer rotates and its output words change every update.
+  // They are sampled payload, not motion identity: including them here spends
+  // the entire event allowance before the late completion transition.
+  const bool changed = !trace.have_motion ||
+      !std::equal(identity.begin(), identity.begin() + 5,
+                  trace.motion_identity.begin());
+  const bool sample = !after && trace.frame % 30 == 0 &&
+      trace.motion_sample != trace.frame;
+  if (!changed && !sample) return;
+  trace.have_motion = true;
+  trace.motion_identity = identity;
+  trace.motion_sample = trace.frame;
+  ++trace.motion_events;
+  Log("OWPROBE pictorial motion: update={} boundary={} phase={} changed={} "
+      "script_elapsed={:.3f} script_frame={:.3f} actor_mask={:X} "
+      "player44={:.3f} player48={:.3f} motion52={} motion54={} "
+      "player56={:08X} player60={:08X} player64={:08X} player92={:08X} "
+      "resource={:08X} resource108={:08X} resource112={:08X}",
+      trace.frame, after ? "after_rig" : "before_rig", phase, changed,
+      FloatAt(base, 0x833B4C68 + 24), FloatAt(base, 0x833B4C68 + 28),
+      ActorUpdateMask(base), FloatAt(base, kPlayers + 44),
+      FloatAt(base, kPlayers + 48), identity[0] >> 16, identity[0] & 0xFFFF,
+      identity[1], identity[2], identity[3], identity[4], identity[5],
+      identity[6], identity[7]);
+}
+
 namespace doax2::open_world {
 namespace {
+constexpr std::array<uint32_t, 10> kCameraScriptFields{
+    3536, 3540, 3544, 3548, 3552, 3556, 3580, 3620, 2928, 2932};
+constexpr std::array<uint32_t, 12> kCameraHoldClocks{
+    3540, 3544, 832 + 128, 832 + 132, 832 + 136, 832 + 140,
+    1024 + 128, 1024 + 132, 1024 + 136, 1024 + 140, 1940, 1944};
+constexpr std::array<uint32_t, 11> kCameraHoldIdentity{
+    3536, 832 + 112, 832 + 120, 832 + 124, 832 + 168, 832 + 184,
+    1024 + 112, 1024 + 120, 1024 + 124, 1024 + 168, 1024 + 184};
+
+bool CameraHoldReady(const uint8_t* base, uint32_t& object) {
+  uint32_t objects{}, index{}, phase{}, pc{}, mode{}, active{};
+  if (!Read32(base, kScene + 928, objects) || !objects ||
+      !Read32(base, kScene + 968, index) || index != 0 ||
+      !Read32(base, 0x83DB9C54, phase) || phase != 7 ||
+      !Readable(base, objects, 4144) ||
+      !Read32(base, objects + 3536, pc) || pc != 0x82D92A48 ||
+      !Read32(base, objects + 3580, mode) || mode != 3 ||
+      !Read32(base, objects + 3620, active) || active != 1) return false;
+  for (uint32_t offset : kCameraHoldClocks)
+    if (!std::isfinite(FloatAt(base, objects + offset))) return false;
+  for (uint32_t track : {832u, 1024u}) {
+    uint32_t type{}, limit{};
+    if (!Read32(base, objects + track + 112, type) ||
+        !Read32(base, objects + track + 124, limit) ||
+        !CameraTrackCanHold(type, limit, FloatAt(base, objects + track + 128),
+                           FloatAt(base, objects + track + 136))) return false;
+  }
+  // Stay inside the existing shot, away from its dispatch/end boundaries.
+  const float gate = FloatAt(base, objects + 1940);
+  if (!CameraGateCanHold(gate)) return false;
+  object = objects;
+  return true;
+}
+
 // Verified leaf command boundaries. Capture arguments before the command
 // advances its instruction pointer; call its original exactly once even when
 // observation is disabled or the script range fails validation.
@@ -499,15 +1032,293 @@ uint32_t ActorUpdateMask(const uint8_t* base) {
 }
 }  // namespace
 
+namespace {
+constexpr uint32_t kActorTracks = 0x834271A0;
+constexpr std::array<uint32_t, 4> kActorClockFields{52, 56, 72, 76};
+constexpr std::array<uint32_t, 6> kActorIdentityFields{48, 108, 112, 124, 128, 132};
+bool ActorTracksReady(const uint8_t* base) {
+  bool active = false;
+  for (uint32_t i = 0; i < 2; ++i) {
+    const uint32_t object = kActorTracks + i * 144;
+    if (!Readable(base, object, 144)) return false;
+    if (base[object + 124] || (!base[object + 125] && !base[object + 127])) continue;
+    active = true;
+    const float phase = FloatAt(base, object + 52);
+    const uint32_t end = (uint32_t(base[object + 112]) << 8) | base[object + 113];
+    if (!ActorTrackCanHold(phase, end)) return false;
+  }
+  return active;
+}
+}
+
+OrbitCameraScope::OrbitCameraScope(uint8_t* base, uint32_t object) {
+  if (!REXCVAR_GET(doax2_open_world_probe) ||
+      (!REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial)) || trace.orbit_stopped) return;
+  // AF08 is called for multiple camera objects in the same update. A call
+  // for an unrelated object is not an ownership loss of the admitted one.
+  if (!trace.camera_hold_object || object != trace.camera_hold_object) return;
+  const double now = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  uint32_t selected{}, table{}, state{}, record{}, scene{}, motion{};
+  const bool eligible = trace.camera_hold_active && object == trace.camera_hold_object &&
+      now < trace.camera_hold_until && Readable(base, kScreen, 1) && base[kScreen] == 2 &&
+      Read32(base, kScreen + 68, table) && table == 0x82B83C80 &&
+      Read32(base, kScreen + 40, state) && state == 1 &&
+      Read32(base, 0x83DB99CC, record) && record == 0x83DA61BC &&
+      Read32(base, record, scene) && scene == 58 &&
+      Read32(base, kPlayers + 52, motion) && IdleActorExpected(base, motion >> 16) &&
+      ActorUpdateMask(base) == 1 && CameraHoldReady(base, selected) && selected == object;
+  if (!eligible) {
+    if (trace.orbit_started) {
+      trace.orbit_stopped = true;
+      uint32_t phase{}, index{}, mode{};
+      Read32(base, 0x83DB9C54, phase);
+      Read32(base, kScene + 968, index);
+      Read32(base, object + 3580, mode);
+      Log("OWPROBE orbit: release update={} object={:08X} hold_active={} deadline={} phase={} camera_index={} mode={} selected={:08X}; native pose retained",
+          trace.frame, object, trace.camera_hold_active, now >= trace.camera_hold_until,
+          phase, index, mode, selected);
+    }
+    return;
+  }
+  for (uint32_t i = 0; i < pose_.size(); ++i)
+    if (!Read32(base, object + 192 + i * 4, pose_[i])) return;
+  if (!trace.orbit_started) {
+    const std::array<float, 3> eye{FloatAt(base, object + 192),
+        FloatAt(base, object + 196), FloatAt(base, object + 200)};
+    const std::array<float, 3> aim{FloatAt(base, object + 208),
+        FloatAt(base, object + 212), FloatAt(base, object + 216)};
+    if (!trace.orbit.Begin(eye, aim)) {
+      trace.orbit_stopped = true;
+      Log("OWPROBE orbit: admission rejected update={}; invalid native pose", trace.frame);
+      return;
+    }
+    trace.orbit_started = true;
+    trace.orbit_time = now;
+    Log("OWPROBE orbit: begin update={} object={:08X} radius={:.3f} target=({:.3f},{:.3f},{:.3f}) yaw={:.3f} pitch={:.3f}",
+        trace.frame, object, trace.orbit.radius, aim[0], aim[1], aim[2], trace.orbit.yaw, trace.orbit.pitch);
+  }
+  if (trace.orbit_frame != trace.frame) {
+    float x = 0, y = 0;
+    DWORD foreground_process{};
+    GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
+    if (auto* runtime = rex::Runtime::instance();
+        runtime && foreground_process == GetCurrentProcessId()) {
+      if (auto* input = dynamic_cast<rex::input::InputSystem*>(runtime->input_system())) {
+        rex::input::X_INPUT_STATE pad{};
+        if (input->GetState(0, &pad) == 0 &&
+            !(uint16_t(pad.gamepad.buttons) & (rex::input::X_INPUT_GAMEPAD_B |
+                rex::input::X_INPUT_GAMEPAD_START | rex::input::X_INPUT_GAMEPAD_BACK))) {
+          x = float(int16_t(pad.gamepad.thumb_rx)) / 32768.0f;
+          y = float(int16_t(pad.gamepad.thumb_ry)) / 32768.0f;
+        }
+      }
+    }
+    trace.orbit.Step(x, y, now - trace.orbit_time);
+    trace.orbit_time = now;
+    trace.orbit_frame = trace.frame;
+    if (trace.frame % 30 == 0)
+      Log("OWPROBE orbit: update={} stick=({:.3f},{:.3f}) yaw={:.3f} pitch={:.3f}",
+          trace.frame, x, y, trace.orbit.yaw, trace.orbit.pitch);
+  }
+  const auto eye = trace.orbit.Eye();
+  base_ = base;
+  object_ = object;
+  for (uint32_t i = 0; i < 3; ++i) {
+    REX_STORE_U32(object + 192 + i * 4, std::bit_cast<uint32_t>(eye[i]));
+    REX_STORE_U32(object + 208 + i * 4, std::bit_cast<uint32_t>(trace.orbit.target[i]));
+  }
+}
+
+OrbitCameraScope::~OrbitCameraScope() {
+  if (!base_) return;
+  auto* base = base_;
+  // AF08 derives angles in this 64-byte evaluated pose as well as building
+  // matrices. Restore the whole input block so the orbit cannot feed back
+  // into the next cinematic evaluation; retain the native output matrices.
+  for (uint32_t i = 0; i < pose_.size(); ++i)
+    REX_STORE_U32(object_ + 192 + i * 4, pose_[i]);
+}
+
+ActorClockHoldScope::ActorClockHoldScope(uint8_t* base, uint32_t slot, uint32_t track) {
+  if ((!REXCVAR_GET(doax2_open_world_pictorial_actor_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_long_actor_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial)) ||
+      !trace.camera_hold_active || slot != 0 || track > 1) return;
+  const double now = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (now >= trace.camera_hold_until) return;
+  uint32_t phase{}, selected{}, motion{}, table{}, callback{}, state{};
+  if (!Readable(base, kScreen, 1) || base[kScreen] != 2 ||
+      !Read32(base, kScreen + 68, table) || table != 0x82B83C80 ||
+      !Read32(base, table + 2 * 36 + 4, callback) || callback != 0x825A2270 ||
+      !Read32(base, kScreen + 40, state) || state != 1 ||
+      !Read32(base, 0x83DB9C54, phase) || phase != 7 ||
+      !Read32(base, 0x83DB99CC, selected) || selected != 0x83DA61BC ||
+      !Read32(base, kPlayers + 52, motion) || (motion >> 16) != 27 ||
+      ActorUpdateMask(base) != 1 || !ActorTracksReady(base)) {
+    trace.camera_hold_active = false;
+    trace.pictorial_hold.Update(false, FloatAt(base, 0x833B4C68 + 28), now);
+    Log("OWPROBE actor hold: aborted update={}; owner or track eligibility lost", trace.frame);
+    return;
+  }
+  object_ = kActorTracks + track * 144;
+  if (base[object_ + 124] || (!base[object_ + 125] && !base[object_ + 127])) return;
+  for (size_t i = 0; i < clocks_.size(); ++i)
+    if (!Read32(base, object_ + kActorClockFields[i], clocks_[i])) return;
+  for (size_t i = 0; i < identity_.size(); ++i)
+    if (!Read32(base, object_ + kActorIdentityFields[i], identity_[i])) return;
+  base_ = base;
+}
+
+ActorClockHoldScope::~ActorClockHoldScope() {
+  if (!base_) return;
+  uint8_t* base = base_;
+  for (size_t i = 0; i < identity_.size(); ++i) {
+    uint32_t current{};
+    if (!Read32(base, object_ + kActorIdentityFields[i], current) || current != identity_[i]) {
+      trace.camera_hold_active = false;
+      const double now = std::chrono::duration<double>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      trace.pictorial_hold.Update(false, FloatAt(base, 0x833B4C68 + 28), now);
+      Log("OWPROBE actor hold: aborted update={} object={:08X} identity_offset={}; native transition preserved",
+          trace.frame, object_, kActorIdentityFields[i]);
+      return;
+    }
+  }
+  const float native_phase = FloatAt(base, object_ + 52);
+  for (size_t i = 0; i < clocks_.size(); ++i)
+    REX_STORE_U32(object_ + kActorClockFields[i], clocks_[i]);
+  if (trace.frame % 30 == 0)
+    Log("OWPROBE actor hold: update={} object={:08X} phase_native={:.3f} restored={:.3f}; native clock routine ran",
+        trace.frame, object_, native_phase, std::bit_cast<float>(clocks_[0]));
+}
+
+CameraClockHoldScope::CameraClockHoldScope(uint8_t* base, uint32_t object) {
+  if ((!REXCVAR_GET(doax2_open_world_pictorial_camera_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_actor_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_long_actor_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) &&
+       !REXCVAR_GET(doax2_open_world_pictorial_idle_trial)) ||
+      !trace.camera_hold_active || object != trace.camera_hold_object) return;
+  const double now = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  uint32_t selected{}, table{}, scene{};
+  if (now >= trace.camera_hold_until ||
+      !Readable(base, kScreen, 1) || base[kScreen] != 2 ||
+      !Read32(base, kScreen + 68, table) || table != 0x82B83C80 ||
+      !Read32(base, 0x83DB99CC, selected) || selected != 0x83DA61BC ||
+      !Read32(base, selected, scene) || scene != 58 ||
+      !CameraHoldReady(base, selected) || selected != object) return;
+  for (size_t i = 0; i < clocks_.size(); ++i)
+    if (!Read32(base, object + kCameraHoldClocks[i], clocks_[i])) return;
+  for (size_t i = 0; i < identity_.size(); ++i)
+    if (!Read32(base, object + kCameraHoldIdentity[i], identity_[i])) return;
+  base_ = base;
+  object_ = object;
+}
+
+CameraClockHoldScope::~CameraClockHoldScope() {
+  if (!base_ || !Readable(base_, object_, 4144)) return;
+  uint8_t* base = base_;
+  for (size_t i = 0; i < identity_.size(); ++i) {
+    uint32_t current{};
+    if (!Read32(base, object_ + kCameraHoldIdentity[i], current) || current != identity_[i]) {
+      trace.camera_hold_active = false;
+      const double now = std::chrono::duration<double>(
+          std::chrono::steady_clock::now().time_since_epoch()).count();
+      trace.pictorial_hold.Update(false, FloatAt(base, 0x833B4C68 + 28), now);
+      Log("OWPROBE camera hold: aborted update={} identity_offset={}; native transition preserved",
+          trace.frame, kCameraHoldIdentity[i]);
+      return;
+    }
+  }
+  const float native_timeline = FloatAt(base, object_ + 3540);
+  for (size_t i = 0; i < clocks_.size(); ++i)
+    REX_STORE_U32(object_ + kCameraHoldClocks[i], clocks_[i]);
+  if (++trace.camera_hold_calls == 1 || trace.frame % 30 == 0)
+    Log("OWPROBE camera hold: update={} object={:08X} timeline_native={:.3f} restored={:.3f} "
+        "track_phase=({:.3f},{:.3f}) gate={:.3f} calls={}; native evaluator ran",
+        trace.frame, object_, native_timeline, std::bit_cast<float>(clocks_[0]),
+        std::bit_cast<float>(clocks_[2]), std::bit_cast<float>(clocks_[6]),
+        std::bit_cast<float>(clocks_[10]), trace.camera_hold_calls);
+}
+
+CameraScriptScope::CameraScriptScope(const uint8_t* base, uint32_t object) {
+  uint32_t table{}, callback{}, selected{}, scene{}, index{}, objects{};
+  if (!Enabled() || trace.camera_events >= 256 ||
+      !Readable(base, kScreen, 1) || base[kScreen] != 2 ||
+      !Read32(base, kScreen + 68, table) || table != 0x82B83C80 ||
+      !Read32(base, table + 2 * 36 + 4, callback) || callback != 0x825A2270 ||
+      !Read32(base, 0x83DB9C54, phase_) || phase_ < 4 || phase_ > 10 ||
+      !Read32(base, 0x83DB99CC, selected) || selected != 0x83DA61BC ||
+      !Read32(base, selected, scene) || scene != 58 ||
+      !Read32(base, kScene + 968, index) || index >= 8 ||
+      !Read32(base, kScene + 928, objects) || !objects ||
+      uint64_t(objects) + uint64_t(index) * 4144 != object ||
+      !Readable(base, object, 4144)) return;
+  for (size_t i = 0; i < kCameraScriptFields.size(); ++i)
+    if (!Read32(base, object + kCameraScriptFields[i], before_[i])) return;
+  if (before_[0]) {
+    Read32(base, before_[0], entry_time_);
+    if (before_[0] <= UINT32_MAX - 4) Read32(base, before_[0] + 4, entry_type_);
+  }
+  base_ = base;
+  object_ = object;
+}
+
+CameraScriptScope::~CameraScriptScope() {
+  if (!base_ || !Enabled() || !Readable(base_, object_, 4144)) return;
+  std::array<uint32_t, 10> after{};
+  for (size_t i = 0; i < kCameraScriptFields.size(); ++i)
+    if (!Read32(base_, object_ + kCameraScriptFields[i], after[i])) return;
+  const bool transition = before_[0] != after[0] || before_[4] != after[4] ||
+      before_[5] != after[5] || before_[6] != after[6] || before_[7] != after[7] ||
+      before_[8] != after[8] || before_[9] != after[9];
+  const bool sample = trace.frame % 30 == 0 && trace.camera_sample != trace.frame;
+  if (!transition && !sample) return;
+  ++trace.camera_events;
+  trace.camera_sample = trace.frame;
+  Log("OWPROBE camera script: update={} phase={} object={:08X} transition={} "
+      "pc={:08X}->{:08X} timeline={:.3f}->{:.3f} subframe={:.3f}->{:.3f} "
+      "entry={}->{} target={}->{} mode={}->{} active={}->{} "
+      "flags=({},{})->({},{}) entry_time={} entry_type={} "
+      "script_frame={:.3f} script_elapsed={:.3f}",
+      trace.frame, phase_, object_, transition, before_[0], after[0],
+      std::bit_cast<float>(before_[1]), std::bit_cast<float>(after[1]),
+      std::bit_cast<float>(before_[2]), std::bit_cast<float>(after[2]),
+      before_[4], after[4], before_[5], after[5], before_[6], after[6],
+      before_[7], after[7], before_[8], before_[9], after[8], after[9],
+      int32_t(entry_time_), entry_type_, FloatAt(base_, 0x833B4C68 + 28),
+      FloatAt(base_, 0x833B4C68 + 24));
+}
+
 ScriptCommandScope::ScriptCommandScope(const uint8_t* base, uint32_t state,
                                       uint32_t handler) {
   constexpr uint32_t script = 0x833B4C68;
   uint32_t id{}, table{}, callback{}, pointer{};
   if (!Enabled() || trace.script_commands >= 128 || state != script ||
-      !Readable(base, kScreen, 1) || (id = base[kScreen]) != 7 ||
-      !Read32(base, kScreen + 68, table) || table != 0x82AACFD0 ||
-      !Read32(base, table + id * 36 + 4, callback) || callback != 0x826E2618 ||
-      !Read32(base, script + 52, pointer) || !Readable(base, pointer, 2) ||
+      !Readable(base, kScreen, 1) ||
+      !Read32(base, kScreen + 68, table)) {
+    return;
+  }
+  id = base[kScreen];
+  const bool vacation = id == 7 && table == 0x82AACFD0;
+  const bool pictorial = id == 2 && table == 0x82B83C80;
+  if ((!vacation && !pictorial) ||
+      !Read32(base, table + id * 36 + 4, callback) ||
+      callback != (vacation ? 0x826E2618u : 0x825A2270u)) return;
+  if (pictorial) {
+    uint32_t phase{};
+    // The verified title pictorial controller starts the shared script in
+    // phase 5, enters playback through 6/7, and begins ending in phase 8.
+    if (!Read32(base, 0x83DB9C54, phase) || phase < 5 || phase > 8) return;
+  }
+  if (!Read32(base, script + 52, pointer) || !Readable(base, pointer, 2) ||
       !Readable(base, script + 138, 4)) {
     return;
   }
@@ -563,11 +1374,70 @@ REX_HOOK_RAW(sub_824BC560) {
 }
 
 // A finite lifetime experiment, confined to the verified script object and
-// opcode-16 active-wait contract. Only its +28 clock is held; native animation,
-// camera services, input, the original wait, and normal cleanup continue.
+// opcode-16 active-wait contract. The first trial holds +28; the coordinated
+// pictorial lifetime trial also holds +24. Native animation, camera services,
+// input, the original wait and normal cleanup continue.
 REX_EXTERN(__imp__sub_824B9EA0);
 REX_HOOK_RAW(sub_824B9EA0) {
   using namespace doax2::open_world;
+  const bool idle_trial = REXCVAR_GET(doax2_open_world_pictorial_idle_trial);
+  const bool long_actor_trial = REXCVAR_GET(doax2_open_world_pictorial_long_actor_trial) ||
+                                REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) ||
+                                REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) || idle_trial;
+  const double duration = long_actor_trial ? 15.0 : 5.0;
+  const bool actor_trial = REXCVAR_GET(doax2_open_world_pictorial_actor_trial) || long_actor_trial;
+  const bool camera_trial = REXCVAR_GET(doax2_open_world_pictorial_camera_trial) || actor_trial;
+  const bool lifetime_trial = REXCVAR_GET(doax2_open_world_pictorial_lifetime_trial) || camera_trial;
+  if (REXCVAR_GET(doax2_open_world_pictorial_hold_trial) || lifetime_trial) {
+    constexpr uint32_t script = 0x833B4C68;
+    uint32_t table{}, callback{}, state{}, phase{}, selected{}, scene_id{}, pointer{}, header{}, camera{}, motion{}, camera_object{};
+    const float frame = FloatAt(base, script + 28);
+    const float elapsed_frame = FloatAt(base, script + 24);
+    const bool eligible = ctx.r3.u32 == script &&
+        Readable(base, kScreen, 1) && base[kScreen] == 2 &&
+        Read32(base, kScreen + 68, table) && table == 0x82B83C80 &&
+        Read32(base, table + 2 * 36 + 4, callback) && callback == 0x825A2270 &&
+        Read32(base, kScreen + 40, state) && state == 1 &&
+        Read32(base, 0x83DB9C54, phase) && phase == 7 &&
+        Read32(base, 0x83DB99CC, selected) && selected == 0x83DA61BC &&
+        Read32(base, selected, scene_id) && scene_id == 58 &&
+        Readable(base, script, 1) && base[script] == 1 &&
+        Read32(base, script + 52, pointer) && pointer == 0x82C2F758 &&
+        Read32(base, pointer, header) && header == 0x081000D2 &&
+        Read32(base, kScene + 968, camera) && camera == 0 &&
+        Read32(base, kPlayers + 52, motion) && IdleActorExpected(base, motion >> 16) &&
+        Readable(base, script + 138, 4) && base[script + 138] == 0 &&
+        base[script + 139] == 1 && base[script + 140] == 2 && base[script + 141] == 3 &&
+        ActorUpdateMask(base) == 1 && frame >= 30.0f && frame < 120.0f &&
+        (!lifetime_trial || std::isfinite(elapsed_frame)) &&
+        (!camera_trial || CameraHoldReady(base, camera_object)) &&
+        (!actor_trial || trace.idle_actor_active || ActorTracksReady(base)) &&
+        (!idle_trial || (!trace.idle_actor_done && IdleResourcesReady(base) &&
+                        FloatAt(base, kPlayers + 116) == 0));
+    const double now = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto decision = trace.pictorial_hold.Update(eligible, frame, now, duration);
+    if (decision.action == HoldAction::Begin) {
+      trace.pictorial_elapsed_anchor = elapsed_frame;
+      trace.camera_hold_object = camera_object;
+      trace.camera_hold_until = now + duration;
+    }
+    trace.camera_hold_active = camera_trial &&
+        (decision.action == HoldAction::Begin || decision.action == HoldAction::Hold);
+    if (decision.action == HoldAction::Begin && idle_trial) StartIdleActor(base);
+    if (decision.action == HoldAction::Release) RestoreIdleActor(base);
+    if (decision.action == HoldAction::Begin || decision.action == HoldAction::Release) {
+      Log("OWPROBE pictorial hold: {} update={} pc={:08X} frame={:.3f} "
+          "anchor={:.3f} elapsed={:.3f}s eligible={} script_elapsed={:.3f} coordinated={} duration={:.1f}s",
+          decision.action == HoldAction::Begin ? "begin" : "release", trace.frame,
+          pointer, frame, decision.frame, decision.seconds, eligible, elapsed_frame, lifetime_trial, duration);
+    }
+    if (decision.action == HoldAction::Begin || decision.action == HoldAction::Hold) {
+      REX_STORE_U32(script + 28, std::bit_cast<uint32_t>(decision.frame));
+      if (lifetime_trial)
+        REX_STORE_U32(script + 24, std::bit_cast<uint32_t>(trace.pictorial_elapsed_anchor));
+    }
+  }
   if (REXCVAR_GET(doax2_open_world_relaxation_hold_trial) && !trace.hold_released) {
     constexpr uint32_t script = 0x833B4C68;
     uint32_t table{}, state{}, callback{}, phase{}, pointer{}, camera{}, motion{}, header{};

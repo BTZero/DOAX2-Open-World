@@ -1,7 +1,8 @@
 # Read-only image snapshot for local source/address research.
 # Output is copyrighted game-derived data and stays in ignored out/.
 [CmdletBinding()]
-param([Parameter(Mandatory)][int]$ProcessId, [switch]$TerrainGeometry)
+param([Parameter(Mandatory)][int]$ProcessId, [switch]$TerrainGeometry, [switch]$MotionBanks,
+      [ValidateRange(0,3)][int]$MotionBankSlot = 0)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot 'out')) + [IO.Path]::DirectorySeparatorChar
@@ -53,6 +54,67 @@ try {
     $path = Join-Path $directory ('image-{0}-{1}.bin' -f $ProcessId,[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'))
     [IO.File]::WriteAllBytes($path, $imageBytes)
     $path
+    if ($MotionBanks) {
+        function Read-MotionBytes([uint64]$address, [int]$count) {
+            if (-not $address -or $count -lt 1 -or $count -gt 512 -or
+                $address + $count -gt 0x100000000L) { return $null }
+            $payload = New-Object byte[] $count
+            $payloadRead = [UIntPtr]::Zero
+            $aliasOffset = if ($address -ge 0xE0000000L) { 0x1000 } else { 0 }
+            if (-not [ResearchImageReader]::ReadProcessMemory($handle,
+                [IntPtr]($arena + [int64]$address + $aliasOffset), $payload,
+                [UIntPtr]::new([uint64]$count), [ref]$payloadRead) -or
+                $payloadRead.ToUInt64() -ne $count) { return $null }
+            return ,$payload
+        }
+        function Read-MotionWord([uint64]$address) {
+            $payload = Read-MotionBytes $address 4
+            if ($null -eq $payload) { return $null }
+            [Array]::Reverse($payload)
+            return [BitConverter]::ToUInt32($payload, 0)
+        }
+        $player = 0x833B8520L
+        $playerBytes = Read-MotionBytes $player 152
+        $phase = Read-MotionWord 0x83DB9C54L
+        $record = Read-MotionWord 0x83DB99CCL
+        if ($null -eq $playerBytes -or $phase -ne 7 -or $record -ne 0x83DA61BCL -or
+            (Read-MotionWord $record) -ne 58 -or $playerBytes[4] -ge 64) {
+            throw 'Motion-bank capture requires the active reference pictorial scene 58.'
+        }
+        $bankRoot = 0x833B87A8L
+        $inspectBankIndex = if ($PSBoundParameters.ContainsKey('MotionBankSlot')) { $MotionBankSlot } else { $playerBytes[4] }
+        $banks = foreach ($bank in @(
+            @{Name='character'; ScriptSlot=($bankRoot + 16 + $inspectBankIndex*64);
+              ClipSlot=($bankRoot + 20 + $inspectBankIndex*64); IDs=@(27,270,271,272,273,274,275,541,543)},
+            @{Name='shared'; ScriptSlot=($bankRoot + 4); ClipSlot=($bankRoot + 8); IDs=@(0,1)}
+        )) {
+            $wrapper = Read-MotionWord $bank.ScriptSlot
+            $scripts = if ($wrapper) { Read-MotionWord $wrapper } else { $null }
+            $clips = Read-MotionWord $bank.ClipSlot
+            $entries = foreach ($motionId in $bank.IDs) {
+                $commandPointer = if ($scripts) { Read-MotionWord ($scripts + $motionId*4) } else { $null }
+                $clipPointer = if ($clips) { Read-MotionWord ($clips + $motionId*4) } else { $null }
+                $commands = if ($commandPointer) { Read-MotionBytes $commandPointer 128 } else { $null }
+                $header = if ($clipPointer) { Read-MotionBytes $clipPointer 32 } else { $null }
+                [pscustomobject]@{
+                    ID=$motionId; CommandPointer=$commandPointer; ClipPointer=$clipPointer
+                    CommandHalfwords=if ($commands) {
+                        @(for ($i=0; $i -lt $commands.Length; $i+=2) {
+                            [int]$commands[$i]*256 + $commands[$i+1]
+                        })
+                    } else { @() }
+                    ClipHeaderHex=if ($header) { [BitConverter]::ToString($header) } else { $null }
+                }
+            }
+            [pscustomobject]@{Name=$bank.Name; Wrapper=$wrapper; ScriptTable=$scripts;
+                ClipTable=$clips; Entries=@($entries)}
+        }
+        $motionPath = [IO.Path]::ChangeExtension($path, '.motions.json')
+        [pscustomobject]@{ProcessId=$ProcessId; Phase=$phase; Selected=$record;
+            CharacterByte1=$playerBytes[1]; BankIndex=$playerBytes[4]; InspectedBank=$inspectBankIndex; Banks=@($banks)
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $motionPath -Encoding UTF8
+        $motionPath
+    }
     if ($TerrainGeometry) {
         # Match the generated Windows guest accessor, including its physical
         # alias guard-page adjustment. Reading a high guest address directly
