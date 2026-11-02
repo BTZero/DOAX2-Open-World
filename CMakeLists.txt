@@ -26,6 +26,16 @@ endif()
 
 rexglue_setup_target(doax2 GPU_PLUGINS xenos)
 
+# Scene research and a separate opt-in terrain trial; absent from ordinary builds.
+option(DOAX2_OPEN_WORLD_DIAGNOSTICS "Build the opt-in read-only scene probe" OFF)
+if(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+    if(NOT WIN32)
+        message(FATAL_ERROR "The scene probe currently requires Windows memory-query support")
+    endif()
+    target_sources(doax2 PRIVATE src/open_world/scene_probe.cpp)
+    target_compile_definitions(doax2 PRIVATE DOAX2_OPEN_WORLD_DIAGNOSTICS)
+endif()
+
 # Diagnostic guest call census; configure a separate build directory with it.
 option(DOAX2_FUNC_CENSUS "Count every recompiled guest function call" OFF)
 if(DOAX2_FUNC_CENSUS)

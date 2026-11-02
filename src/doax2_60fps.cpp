@@ -15,6 +15,10 @@
 #include "doax2_native60_phase.h"
 #include "doax2_native60_keyframe.h"
 
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+#include "open_world/scene_probe.h"
+#endif
+
 #include <bit>
 #include <fstream>
 #include <chrono>
@@ -4055,6 +4059,9 @@ void ReportNative60FiberSlots(uint8_t* base) {
 
 REX_EXTERN(__imp__sub_8258CC00);
 REX_HOOK_RAW(sub_8258CC00) {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveScheduler(base);
+#endif
   // Test G (intro bisect 7): during the Niki Marina intro (racer 0 race
   // state 0) the intro-time script slots 1, 9 and 12 (frame-counting waits
   // 826CC5CC / 82511C24) resume only on alternate updates.
@@ -4101,6 +4108,9 @@ REX_HOOK_RAW(sub_8258CC00) {
   const auto camera_before = SnapshotNative60Camera(base);
   const uint32_t native60_index_before_sub_8258CC00 = Native60SceneIndex(base);
   __imp__sub_8258CC00(ctx, base);
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveScheduler(base);
+#endif
   Native60SceneIndexCheck(base, "sub_8258CC00", native60_index_before_sub_8258CC00);
   Native60FiberWaitsEnd(base, native60_fiber_waits);
   ReportNative60FiberSlots(base);
@@ -5036,9 +5046,10 @@ void Native60WriterProbeEnd(uint8_t* base, const char* name, const Native60Write
   Native60WatchRecord(name, watch_mask & ~native60_watch_child_wrote[state.depth]);
   native60_watch_child_wrote[state.depth - 1] |= watch_mask;
 }
-#define DOAX2_NATIVE60_POS_PROBE(name) \
+#define DOAX2_NATIVE60_POS_PROBE_IMPL(name, observation) \
   REX_EXTERN(__imp__##name); \
   REX_HOOK_RAW(name) { \
+    observation \
     if (!REXCVAR_GET(doax2_native60_counter_scan) || native60_pos_depth >= 64) { \
       __imp__##name(ctx, base); \
       return; \
@@ -5063,6 +5074,14 @@ void Native60WriterProbeEnd(uint8_t* base, const char* name, const Native60Write
       Native60WatchRecord(#name, native60_watch_mask & ~native60_watch_child_wrote[native60_depth]); \
       native60_watch_child_wrote[native60_depth - 1] |= native60_watch_mask; } \
   }
+#define DOAX2_NATIVE60_POS_PROBE(name) DOAX2_NATIVE60_POS_PROBE_IMPL(name, )
+#if DOAX2_OPEN_WORLD_DIAGNOSTICS
+#define DOAX2_NATIVE60_SCRIPT_POS_PROBE(name, address) \
+  DOAX2_NATIVE60_POS_PROBE_IMPL(name, \
+    doax2::open_world::ScriptCommandScope script_observation(base, ctx.r3.u32, address);)
+#else
+#define DOAX2_NATIVE60_SCRIPT_POS_PROBE(name, address) DOAX2_NATIVE60_POS_PROBE(name)
+#endif
 DOAX2_NATIVE60_POS_PROBE(sub_8241EAE8)
 DOAX2_NATIVE60_POS_PROBE(sub_8241EEE8)
 DOAX2_NATIVE60_POS_PROBE(sub_82420028)
@@ -5124,9 +5143,9 @@ DOAX2_NATIVE60_POS_PROBE(sub_824BA0E0)
 DOAX2_NATIVE60_POS_PROBE(sub_824BA2C0)
 DOAX2_NATIVE60_POS_PROBE(sub_824BA360)
 DOAX2_NATIVE60_POS_PROBE(sub_824BA480)
-DOAX2_NATIVE60_POS_PROBE(sub_824BA508)
-DOAX2_NATIVE60_POS_PROBE(sub_824BA6C8)
-DOAX2_NATIVE60_POS_PROBE(sub_824BA758)
+DOAX2_NATIVE60_SCRIPT_POS_PROBE(sub_824BA508, 0x824BA508)
+DOAX2_NATIVE60_SCRIPT_POS_PROBE(sub_824BA6C8, 0x824BA6C8)
+DOAX2_NATIVE60_SCRIPT_POS_PROBE(sub_824BA758, 0x824BA758)
 DOAX2_NATIVE60_POS_PROBE(sub_824BA820)
 DOAX2_NATIVE60_POS_PROBE(sub_824BA998)
 DOAX2_NATIVE60_POS_PROBE(sub_824BAA98)
@@ -5571,7 +5590,15 @@ DOAX2_NATIVE60_POS_PROBE(sub_82410408)
 DOAX2_NATIVE60_POS_PROBE(sub_82410490)
 DOAX2_NATIVE60_POS_PROBE(sub_82410520)
 DOAX2_NATIVE60_POS_PROBE(sub_824105D0)
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+DOAX2_NATIVE60_POS_PROBE_IMPL(sub_82410698,
+  if (doax2::open_world::OverridePictorialUnlock(ctx.r3.u32, uint32_t(ctx.lr))) {
+    ctx.r3.u64 = 1;
+    return;
+  })
+#else
 DOAX2_NATIVE60_POS_PROBE(sub_82410698)
+#endif
 DOAX2_NATIVE60_POS_PROBE(sub_82410778)
 DOAX2_NATIVE60_POS_PROBE(sub_82410800)
 DOAX2_NATIVE60_POS_PROBE(sub_82410928)
@@ -6744,6 +6771,9 @@ REX_HOOK_RAW(sub_826ABE00) {
 
 REX_EXTERN(__imp__sub_826ACB20);
 REX_HOOK_RAW(sub_826ACB20) {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveActivity(0x826ACB20, ctx.r3.u32);
+#endif
   Native60MarkMinigameUpdate();
   {
     const auto prior = native60_flags_keyframe;
@@ -7569,7 +7599,17 @@ DOAX2_NATIVE60_BISECT_HOOK(sub_826448A8, 4)
 DOAX2_NATIVE60_BISECT_HOOK(sub_8263D340, 4)
 DOAX2_NATIVE60_BISECT_HOOK(sub_82638CE0, 4)
 DOAX2_NATIVE60_BISECT_HOOK(sub_826328D8, 4)
-DOAX2_NATIVE60_BISECT_HOOK(sub_82513158, 5)
+REX_EXTERN(__imp__sub_82513158);
+REX_HOOK_RAW(sub_82513158) {
+  if (Native60IntroBisectSkip(base, 5)) return;
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  const uint32_t observed_slot = ctx.r3.u32;
+#endif
+  __imp__sub_82513158(ctx, base);
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveRig(base, observed_slot);
+#endif
+}
 
 // Boot FMV skip (all modes): CRI Sofdec MWSFD 3.97. 829BF270 =
 // mwPlyStartFname(handle, fname), 829BD948 = mwPlyGetStat(handle) (status
@@ -7777,6 +7817,9 @@ Native60HeldCounters<1> native60_phase_frames{"82687C20", {0x839525B4}};
 Native60HeldCounters<1> native60_match_clock{"82687B38", {0x839525C0}};
 REX_EXTERN(__imp__sub_82687C20);
 REX_HOOK_RAW(sub_82687C20) {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveActivity(0x82687C20, ctx.r3.u32);
+#endif
   Native60MarkMinigameUpdate();
   const bool active = native60_phase_frames.Begin(base);
   const uint32_t phase_before = REX_LOAD_U32(0x839528D8 + 4);
@@ -8110,6 +8153,9 @@ REX_HOOK_RAW(sub_82678FF0) {
 Native60HeldCounters<1> native60_jet_clock{"826496A0", {0x839865CC}};
 REX_EXTERN(__imp__sub_826496A0);
 REX_HOOK_RAW(sub_826496A0) {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveActivity(0x826496A0, ctx.r3.u32);
+#endif
   Native60MarkMinigameUpdate();
   native60_jet_frame.store(Doax2EngineFrameCount(), std::memory_order_relaxed);
   const bool active = native60_jet_clock.Begin(base);
@@ -8205,6 +8251,9 @@ REX_HOOK_RAW(sub_82745140) {
 }
 REX_EXTERN(__imp__sub_825A0FD8);
 REX_HOOK_RAW(sub_825A0FD8) {
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveScreen(base, "before");
+#endif
   {
     static uint32_t last_function = ~0u;
     const uint32_t function = Native60ScreenUpdateFunction(base);
@@ -8223,6 +8272,9 @@ REX_HOOK_RAW(sub_825A0FD8) {
   const uint32_t state_before = REX_LOAD_U32(0x834BCFE0 + 40);
   const uint32_t frames_before = REX_LOAD_U32(0x834BCFE0 + 52);
   __imp__sub_825A0FD8(ctx, base);
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveScreen(base, "after");
+#endif
   if (active) native60_screen_frames.End(base);
   if (REXCVAR_GET(doax2_native60_counter_scan) &&
       REX_LOAD_U32(0x834BCFE0 + 40) != state_before)
@@ -9084,6 +9136,9 @@ REX_HOOK_RAW(sub_8258E500) {
                 REXCVAR_GET(doax2_time_source_probe));
   const uint32_t native60_index_before_sub_8258E500 = Native60SceneIndex(base);
   __imp__sub_8258E500(ctx, base);
+#if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
+  doax2::open_world::ObserveFrame(base);
+#endif
   Native60SceneIndexCheck(base, "sub_8258E500", native60_index_before_sub_8258E500);
   ReportNative60GameStep(base);
   Native60DisplayFilterApply(base);

@@ -44,8 +44,10 @@ def main() -> None:
             next_opcode = next_instruction >> 26
             next_ra = (next_instruction >> 16) & 31
             next_immediate = signed16(next_instruction & 0xFFFF)
-            # lfs / lfd / lwz / stfs / stfd / stw with the same base register.
-            if next_opcode in {32, 36, 48, 50, 52, 54} and next_ra == register and next_immediate == low:
+            # Address construction with addi, or a direct load/store using
+            # the same base register. Indexed table users commonly construct
+            # the address first, so looking only for memory operands misses them.
+            if next_opcode in {14, 32, 36, 48, 50, 52, 54} and next_ra == register and next_immediate == low:
                 results.append((base + offset, base + next_offset, next_instruction))
     if not results:
         print("No direct references found.")
