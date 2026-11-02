@@ -30,6 +30,7 @@ constexpr int kDisplayLocked = 114;
 constexpr int kAsyncOcclusion = 115;
 constexpr int kBatchUploads = 116;
 constexpr int kKeepSong = 117;
+constexpr int kSkipIntro = 118;
 
 // Frame rate modes.
 //   30  Stable 30 FPS: out/game/doax2.exe, production settings, no diagnostics.
@@ -81,6 +82,7 @@ struct Settings {
   bool async_occlusion = true;
   bool batch_uploads = true;
   bool keep_song = false;
+  bool skip_intro_movies = true;
 };
 
 std::filesystem::path g_root;
@@ -142,6 +144,7 @@ Settings LoadSettings() {
   settings.async_occlusion = ReadBool(values, "async_occlusion", settings.async_occlusion);
   settings.batch_uploads = ReadBool(values, "batch_uploads", settings.batch_uploads);
   settings.keep_song = ReadBool(values, "keep_song", settings.keep_song);
+  settings.skip_intro_movies = ReadBool(values, "skip_intro_movies", settings.skip_intro_movies);
   return settings;
 }
 
@@ -164,7 +167,8 @@ void SaveSettings(const Settings& settings) {
          << "display_locked=" << (settings.display_locked ? "true" : "false") << '\n'
          << "async_occlusion=" << (settings.async_occlusion ? "true" : "false") << '\n'
          << "batch_uploads=" << (settings.batch_uploads ? "true" : "false") << '\n'
-         << "keep_song=" << (settings.keep_song ? "true" : "false") << '\n';
+         << "keep_song=" << (settings.keep_song ? "true" : "false") << '\n'
+         << "skip_intro_movies=" << (settings.skip_intro_movies ? "true" : "false") << '\n';
 }
 
 HWND AddLabel(HWND parent, const wchar_t* text, int x, int y, int width = 220) {
@@ -241,6 +245,7 @@ Settings ReadControls(HWND window) {
   settings.async_occlusion = Checked(window, kAsyncOcclusion);
   settings.batch_uploads = Checked(window, kBatchUploads);
   settings.keep_song = Checked(window, kKeepSong);
+  settings.skip_intro_movies = Checked(window, kSkipIntro);
   return settings;
 }
 
@@ -308,6 +313,7 @@ void Launch(HWND window) {
   const auto true_false = [](bool value) { return value ? L"true" : L"false"; };
   std::wstring command = Quote(game_exe)
       + L" --game_data_root=" + Quote(g_root / kGameFolder)
+      + L" --doax2_skip_intro_movies=" + (settings.skip_intro_movies ? L"true" : L"false")
       + L" --user_data_root=" + Quote(g_root / "userdata")
       // Validated D3D12 RTV path with the Intel stencil/viewport corrections.
       + L" --gpu_plugin=" + (display_locked ? L"xenos60" : L"xenos")
@@ -542,7 +548,9 @@ void BuildControls(HWND window, const Settings& settings) {
   set_font(AddCheck(window, kKeepSong, L"Keep song playing across scenes (60 FPS modes)",
                     24, 518, 420, settings.keep_song));
   }
-  const int launch_y = kTester ? 526 : 552;
+  set_font(AddCheck(window, kSkipIntro, L"Skip intro movies and legal warning", 24, kTester ? 440 : 544,
+                    420, settings.skip_intro_movies));
+  const int launch_y = kTester ? 526 : 578;
   HWND launch = CreateWindowW(L"BUTTON", L"Launch DOAX2", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                               24, launch_y, 456, 42, window, reinterpret_cast<HMENU>(INT_PTR(kLaunch)), nullptr, nullptr);
   set_font(launch);
@@ -565,7 +573,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   window_class.lpszClassName = class_name;
   RegisterClassExW(&window_class);
   HWND window = CreateWindowExW(0, class_name, kTester ? L"DOAX2 Recomp 60 FPS Test" : L"DOAX2 Recomp Launcher", WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                                 CW_USEDEFAULT, CW_USEDEFAULT, 530, kTester ? 664 : 690, nullptr, nullptr, instance, nullptr);
+                                 CW_USEDEFAULT, CW_USEDEFAULT, 530, kTester ? 664 : 716, nullptr, nullptr, instance, nullptr);
   if (!window) return 1;
   BuildControls(window, LoadSettings());
   ShowWindow(window, show);

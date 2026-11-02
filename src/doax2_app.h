@@ -7,6 +7,8 @@
 #include <rex/rex_app.h>
 
 #include "doax2_fps_telemetry.h"
+#include "doax2_options.h"
+#include <rex/ui/imgui_dialog.h>
 
 class Doax2App : public rex::ReXApp {
  public:
@@ -19,6 +21,7 @@ class Doax2App : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
+    Doax2LoadOptions(user_data_root());
     SetGuestFrameStats([] {
       rex::ui::FrameStats stats;
       stats.fps = Doax2EngineFramesPerSecond();
@@ -27,6 +30,12 @@ class Doax2App : public rex::ReXApp {
       return stats;
     });
   }
+
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    options_dialog_ = Doax2CreateOptionsDialog(drawer);
+  }
+
+  void OnShutdown() override { options_dialog_.reset(); }
 
   // Override virtual hooks for customization:
   // void OnPostInitLogging() override {}
@@ -40,4 +49,7 @@ class Doax2App : public rex::ReXApp {
   // CreateAchievementNotificationDialog() override;
   // void OnShutdown() override {}
   // void OnConfigurePaths(rex::PathConfig& paths) override {}
+
+ private:
+  std::unique_ptr<rex::ui::ImGuiDialog> options_dialog_;
 };
