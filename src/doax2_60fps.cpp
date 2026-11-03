@@ -5269,7 +5269,12 @@ REX_EXTERN(__imp__sub_82510218);
 REX_HOOK_RAW(sub_82510218) {
 #if defined(DOAX2_OPEN_WORLD_DIAGNOSTICS)
   doax2::open_world::RootMotionScope root_observation(base, ctx.r3.u32);
-  doax2::open_world::HoldIdleRoot(base, ctx.r3.u32);
+  doax2::open_world::HoldIdleRoot(base, ctx, ctx.r3.u32);
+  struct CommitMovement {
+    uint8_t* base;
+    uint32_t slot;
+    ~CommitMovement() { doax2::open_world::CommitIdleMovement(base, slot); }
+  } commit_movement{base,ctx.r3.u32};
 #endif
   struct Player {
     float last_x = 0, last_z = 0;

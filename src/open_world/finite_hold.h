@@ -29,7 +29,7 @@ class FiniteScriptHold {
     if (released_) return {};
     const bool valid = std::isfinite(frame) && std::isfinite(now);
     if (!started_) {
-      if (!eligible || !valid || !std::isfinite(duration) || duration <= 0 || duration > 15) return {};
+      if (!eligible || !valid || !std::isfinite(duration) || duration <= 0 || duration > 300) return {};
       duration_ = duration;
       started_ = true;
       start_ = now;

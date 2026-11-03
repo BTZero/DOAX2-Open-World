@@ -36,6 +36,18 @@ int main() {
     Check(!b.Begin({0, 1000, 0}, {0, 0, 0}));
     Check(!b.Begin({0, 2, 0}, {0, 0, 0}));
     Check(!b.Begin({std::numeric_limits<float>::quiet_NaN(), 0, 0}, {0, 0, 0}));
+    OrbitCamera free;
+    Check(free.Begin({0,1,3},{0,0,0}));
+    free.exploration = true;
+    for (int i=0;i<300;++i) free.Step(1,1,1.0/30);
+    Check(std::abs(free.yaw) > .6f && std::abs(free.yaw) <= 3.142f);
+    Check(free.pitch == 1.f);
+    free.Zoom(1,100);
+    Check(free.radius < 3.5f); // a stall cannot jump straight to max zoom
+    for (int i=0;i<300;++i) free.Zoom(1,.1);
+    Check(free.radius == 6);
+    for (int i=0;i<300;++i) { free.Zoom(-1,.1); free.Step(0,-1,.1); }
+    Check(free.radius == 1.5f && free.pitch == .05f);
     std::cout << "Orbit camera checks passed\n";
     return 0;
   } catch (const std::exception& e) {

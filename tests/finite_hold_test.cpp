@@ -57,7 +57,21 @@ int main() {
     longerExit.Update(true, 30, 0, 15);
     Check(longerExit.Update(false, 31, 3).action == HoldAction::Release);
     Check(longerExit.Update(true, 30, 4, 15).action == HoldAction::Idle);
-    for (double duration : {0.0, -1.0, 16.0, std::numeric_limits<double>::infinity(),
+    FiniteScriptHold movement;
+    Check(movement.Update(true, 30, 100, 120).action == HoldAction::Begin);
+    Check(movement.Update(true, 31, 115).action == HoldAction::Hold);
+    Check(movement.Update(true, 31, 219.999).action == HoldAction::Hold);
+    Check(movement.Update(true, 31, 220).action == HoldAction::Release);
+    Check(movement.Update(true, 30, 221, 120).action == HoldAction::Idle);
+    FiniteScriptHold movementExit;
+    Check(movementExit.Update(true, 30, 0, 120).action == HoldAction::Begin);
+    Check(movementExit.Update(false, 31, 20).action == HoldAction::Release);
+    FiniteScriptHold exploration;
+    Check(exploration.Update(true,30,0,300).action == HoldAction::Begin);
+    Check(exploration.Update(true,31,120).action == HoldAction::Hold);
+    Check(exploration.Update(true,31,299.999).action == HoldAction::Hold);
+    Check(exploration.Update(true,31,300).action == HoldAction::Release);
+    for (double duration : {0.0, -1.0, 300.001, std::numeric_limits<double>::infinity(),
                             std::numeric_limits<double>::quiet_NaN()}) {
       FiniteScriptHold rejected;
       Check(rejected.Update(true, 30, 0, duration).action == HoldAction::Idle);

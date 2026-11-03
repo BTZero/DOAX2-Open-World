@@ -3,13 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 
 namespace doax2::open_world {
-// Small, fixed-radius orbit around the admitted native shot's target.
-// Deliberately bounded until camera obstruction queries are established.
+// The reference trial retains a small fixed-radius orbit. Exploration enables
+// full yaw and bounded zoom; its caller clips the eye against stage terrain.
 struct OrbitCamera {
   std::array<float, 3> target{};
   float radius{}, yaw{}, pitch{}, yaw_anchor{}, pitch_anchor{};
+  bool exploration{};
   bool Begin(const std::array<float, 3>& eye, const std::array<float, 3>& aim) {
     for (int i = 0; i < 3; ++i)
       if (!std::isfinite(eye[i]) || !std::isfinite(aim[i]) ||
@@ -30,10 +32,19 @@ struct OrbitCamera {
     if (magnitude <= 0.2f) return;
     const float scale = (std::min(magnitude, 1.0f) - 0.2f) / (0.8f * magnitude);
     const float step = float(std::min(seconds, 0.1)) * 0.8f;
+    if (exploration) {
+      yaw = std::remainder(yaw + x * scale * step * 2, 2 * std::numbers::pi_v<float>);
+      pitch = std::clamp(pitch + y * scale * step, .05f, 1.0f);
+      return;
+    }
     yaw = std::clamp(yaw + x * scale * step, yaw_anchor - 0.6f, yaw_anchor + 0.6f);
     pitch = std::clamp(pitch + y * scale * step,
                        std::max(-1.2f, pitch_anchor - 0.25f),
                        std::min(1.2f, pitch_anchor + 0.25f));
+  }
+  void Zoom(float input, double seconds) {
+    if (exploration && std::isfinite(input) && std::isfinite(seconds) && seconds >= 0)
+      radius = std::clamp(radius + std::clamp(input,-1.f,1.f) * float(std::min(seconds,.1)) * 2, 1.5f, 6.f);
   }
   std::array<float, 3> Eye() const {
     const float horizontal = radius * std::cos(pitch);

@@ -1,6 +1,8 @@
 #include "scene_probe.h"
 #include "finite_hold.h"
 #include "orbit_camera.h"
+#include "bounded_movement.h"
+#include "exploration_terrain.h"
 
 #include "generated/default/doax2_pch.h"
 
@@ -75,9 +77,18 @@ REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_movement_trial, false, "DOAX2/Ope
                    "Stationary left-stick idle/jog binding test in scene 58; no displacement")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_movement_displacement, false, "DOAX2/OpenWorld",
+                   "Bounded planar travel in the idle/jog trial; fixed height, no collision")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+REXCVAR_DEFINE_BOOL(doax2_open_world_pictorial_exploration, false, "DOAX2/OpenWorld",
+                   "Five-minute grounded exploration with full camera orbit in scene 58")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REX_EXTERN(sub_8266D040);
 REX_EXTERN(sub_8266D330);
 REX_EXTERN(__imp__sub_825160D0);
+REX_EXTERN(__imp__sub_825BEE88);
 
 namespace doax2::open_world {
 namespace {
@@ -136,6 +147,7 @@ struct Trace {
   double camera_hold_until{};
   uint32_t camera_hold_calls{};
   OrbitCamera orbit;
+  std::array<float, 3> orbit_target_anchor{};
   bool orbit_started{}, orbit_stopped{};
   uint64_t orbit_frame = ~uint64_t{0};
   double orbit_time{};
@@ -149,6 +161,16 @@ struct Trace {
   uint32_t idle_loop_command{}, idle_loops{};
   uint32_t trial_motion = 270;
   uint64_t movement_input_frame = ~uint64_t{0};
+  uint64_t movement_root_frame = ~uint64_t{0};
+  BoundedMovement movement;
+  ExplorationTerrain terrain;
+  uint32_t terrain_vertices{}, terrain_triangles{}, terrain_vertex_count{}, terrain_triangle_count{};
+  TerrainPoint movement_pose{};
+  uint32_t movement_facing{};
+  bool exploration{};
+  std::array<uint32_t, 4> movement_original_pose{};
+  float movement_x{}, movement_y{};
+  double movement_time{}, movement_seconds{};
   std::array<uint32_t, 4> rig_motion_identity{~0u, ~0u, ~0u, ~0u};
   std::array<uint32_t, 4> root_motion_identity{~0u, ~0u, ~0u, ~0u};
   std::array<uint64_t, 4> motion_rig_sample{~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}, ~uint64_t{0}};
@@ -226,7 +248,7 @@ void Announce() {
   if (trace.announced) return;
   trace.announced = true;
   trace.started = std::chrono::steady_clock::now();
-  Log("OWPROBE v20 enabled: terrain_trial={} relaxation_hold_trial={} pictorial_unlock={} pictorial_hold_trial={} pictorial_lifetime_trial={} pictorial_camera_trial={} pictorial_actor_trial={} pictorial_long_actor_trial={} pictorial_orbit_trial={} motion_research={} idle_bank_trial={} idle_trial={} movement_binding_trial={}; raw guest identities; "
+  Log("OWPROBE v22 enabled: terrain_trial={} relaxation_hold_trial={} pictorial_unlock={} pictorial_hold_trial={} pictorial_lifetime_trial={} pictorial_camera_trial={} pictorial_actor_trial={} pictorial_long_actor_trial={} pictorial_orbit_trial={} motion_research={} idle_bank_trial={} idle_trial={} movement_binding_trial={}; raw guest identities; "
       "sample interval=30 updates line_limit={} thread={}",
       REXCVAR_GET(doax2_open_world_terrain_trial),
       REXCVAR_GET(doax2_open_world_relaxation_hold_trial),
@@ -536,6 +558,10 @@ void UpdateMovementBinding(uint8_t* base) {
   if (!REXCVAR_GET(doax2_open_world_pictorial_movement_trial) ||
       !trace.idle_actor_active || trace.movement_input_frame == trace.frame) return;
   trace.movement_input_frame = trace.frame;
+  const double now = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  trace.movement_seconds = std::clamp(now - trace.movement_time, 0.0, 0.05);
+  trace.movement_time = now;
   float x = 0, y = 0;
   DWORD foreground_process{};
   GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
@@ -552,8 +578,10 @@ void UpdateMovementBinding(uint8_t* base) {
       }
     }
   }
-  // Hysteresis avoids repeated rebinds near the radial deadzone. Input only
-  // selects animation in this resource-validation stage; roots stay held.
+  trace.movement_x = x;
+  trace.movement_y = y;
+  // Hysteresis avoids repeated rebinds near the radial deadzone. Travel
+  // additionally waits for the native jog binder and the orbit to be ready.
   const float magnitude = std::min(1.0f, std::hypot(x, y));
   const uint32_t desired = magnitude > (trace.trial_motion == 8223 ? 0.18f : 0.25f) ? 8223 : 270;
   if (desired == trace.trial_motion || base[kPlayers + 56]) return;
@@ -569,8 +597,53 @@ void UpdateMovementBinding(uint8_t* base) {
   base[kPlayers + 56] = 1;
   base[kPlayers + 60] = 0;
   base[kPlayers + 61] = 0;
-  Log("OWPROBE movement binding: request update={} motion={} stick=({:.3f},{:.3f}) magnitude={:.3f}; displacement disabled",
-      trace.frame, desired, x, y, magnitude);
+  Log("OWPROBE movement binding: request update={} motion={} stick=({:.3f},{:.3f}) magnitude={:.3f} displacement={}",
+      trace.frame, desired, x, y, magnitude, trace.movement.active);
+}
+bool ExplorationGeometryMatches(const uint8_t* base) {
+  uint32_t vtable{}, vertices{}, triangles{}, vc{}, tc{};
+  return Read32(base, 0x82E2DB50, vtable) && vtable == 0x823BFD30 &&
+      Read32(base, 0x82E2DB50 + 20, vertices) && vertices == trace.terrain_vertices &&
+      Read32(base, 0x82E2DB50 + 24, triangles) && triangles == trace.terrain_triangles &&
+      Read32(base, 0x82E2DB50 + 40, vc) && vc == trace.terrain_vertex_count &&
+      Read32(base, 0x82E2DB50 + 44, tc) && tc == trace.terrain_triangle_count;
+}
+bool LoadExplorationTerrain(const uint8_t* base) {
+  trace.terrain = {};
+  uint32_t vtable{};
+  if (!Read32(base, 0x82E2DB50, vtable) || vtable != 0x823BFD30 ||
+      !Read32(base, 0x82E2DB50 + 20, trace.terrain_vertices) ||
+      !Read32(base, 0x82E2DB50 + 24, trace.terrain_triangles) ||
+      !Read32(base, 0x82E2DB50 + 40, trace.terrain_vertex_count) ||
+      !Read32(base, 0x82E2DB50 + 44, trace.terrain_triangle_count) ||
+      !trace.terrain_vertex_count || trace.terrain_vertex_count > 8192 ||
+      !trace.terrain_triangle_count || trace.terrain_triangle_count > 16384 ||
+      !Readable(base, trace.terrain_vertices, trace.terrain_vertex_count * 16) ||
+      !Readable(base, trace.terrain_triangles, trace.terrain_triangle_count * 8)) return false;
+  std::vector<TerrainPoint> vertices;
+  for (uint32_t i = 0; i < trace.terrain_vertex_count; ++i) {
+    TerrainPoint vertex;
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      vertex[axis] = FloatAt(base, trace.terrain_vertices + i * 16 + axis * 4);
+      if (!std::isfinite(vertex[axis]) || std::abs(vertex[axis]) > 10000) return false;
+    }
+    vertices.push_back(vertex);
+  }
+  for (uint32_t i = 0; i < trace.terrain_triangle_count; ++i) {
+    uint32_t first{}, second{};
+    if (!Read32(base, trace.terrain_triangles + i * 8, first) ||
+        !Read32(base, trace.terrain_triangles + i * 8 + 4, second)) return false;
+    const uint32_t a = first >> 16, b = first & 65535, c = second >> 16;
+    if (a >= vertices.size() || b >= vertices.size() || c >= vertices.size()) return false;
+    trace.terrain.triangles.push_back({vertices[a],vertices[b],vertices[c],uint16_t(second)});
+  }
+  TerrainSurface spawn;
+  if (!trace.terrain.Surface(trace.movement_pose[0], trace.movement_pose[2], trace.movement_pose[1], spawn) ||
+      std::abs(spawn.height - trace.movement_pose[1]) > .15f || spawn.slope > .6f) return false;
+  trace.terrain.admitted_flags = spawn.flags;
+  trace.terrain.minimum_y = spawn.height - .5f;
+  float height{};
+  return trace.terrain.Supported(trace.movement_pose[0], trace.movement_pose[2], spawn.height, height);
 }
 void StartIdleActor(uint8_t* base) {
   if ((!REXCVAR_GET(doax2_open_world_pictorial_idle_trial) &&
@@ -591,6 +664,33 @@ void StartIdleActor(uint8_t* base) {
   trace.idle_original_mirror = base[kPlayers + 58];
   trace.idle_original_flag73 = base[kPlayers + 73];
   trace.idle_loop_command = loop + 10;
+  if (REXCVAR_GET(doax2_open_world_pictorial_movement_trial) &&
+      REXCVAR_GET(doax2_open_world_pictorial_movement_displacement)) {
+    for (uint32_t i = 0; i < 4; ++i)
+      if (!Read32(base, kPlayers + 12 + i * 4, trace.movement_original_pose[i])) return;
+    if (!std::isfinite(std::bit_cast<float>(trace.movement_original_pose[1])) ||
+        !trace.movement.Begin(std::bit_cast<float>(trace.movement_original_pose[0]),
+            std::bit_cast<float>(trace.movement_original_pose[2]), trace.movement_original_pose[3])) return;
+    trace.movement_time = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    trace.movement_pose = {FloatAt(base,kPlayers+12),FloatAt(base,kPlayers+16),FloatAt(base,kPlayers+20)};
+    trace.movement_facing = trace.movement_original_pose[3];
+    trace.exploration = REXCVAR_GET(doax2_open_world_pictorial_exploration);
+    if (trace.exploration) {
+      if (!LoadExplorationTerrain(base)) {
+        trace.movement.active = false;
+        Log("OWPROBE exploration: rejected update={}; terrain admission failed", trace.frame);
+        return;
+      }
+      trace.movement.radius = 20;
+      Log("OWPROBE exploration: admitted update={} vertices={} triangles={} flags={} minimum_y={:.4f} radius=20 duration=300",
+          trace.frame, trace.terrain_vertex_count, trace.terrain_triangle_count,
+          trace.terrain.admitted_flags, trace.terrain.minimum_y);
+    }
+    Log("OWPROBE movement: begin update={} anchor=({:.4f},{:.4f},{:.4f}) facing={} radius={} speed={} exploration={}",
+        trace.frame, FloatAt(base, kPlayers + 12), FloatAt(base, kPlayers + 16), FloatAt(base, kPlayers + 20),
+        trace.movement_original_pose[3], trace.movement.radius, BoundedMovement::kSpeed, trace.exploration);
+  }
   trace.idle_actor_active = true;
   base[kPlayers + 4] = uint8_t(trace.idle_bank_slot);
   REX_STORE_U32(kPlayers + 52, (270u << 16) | (trace.idle_original_motion & 0xFFFF));
@@ -610,8 +710,22 @@ void RestoreIdleActor(uint8_t* base) {
   uint32_t motion{};
   if (!Readable(base, kPlayers, 152) || base[kPlayers + 4] != trace.idle_bank_slot ||
       !Read32(base, kPlayers + 52, motion) || motion >> 16 != trace.trial_motion) {
+    trace.movement.active = false;
     Log("OWPROBE idle actor: ownership changed update={}; native actor transition retained", trace.frame);
     return;
+  }
+  if (trace.movement.active) {
+    uint32_t phase{};
+    if (ReferencePictorial(base, phase)) {
+      for (uint32_t i = 0; i < 4; ++i)
+        REX_STORE_U32(kPlayers + 12 + i * 4, trace.movement_original_pose[i]);
+      Log("OWPROBE movement: pose restored update={} xyz=({:.4f},{:.4f},{:.4f}) facing={}",
+          trace.frame, FloatAt(base, kPlayers + 12), FloatAt(base, kPlayers + 16),
+          FloatAt(base, kPlayers + 20), trace.movement_original_pose[3]);
+    } else {
+      Log("OWPROBE movement: pose restoration skipped update={}; scene ownership changed", trace.frame);
+    }
+    trace.movement.active = false;
   }
   // Request the original clip through the native binder with its supported
   // one-shot seek. Never restore stale track/resource pointers.
@@ -757,7 +871,7 @@ IdleCommandScope::~IdleCommandScope() {
   Log("OWPROBE idle actor: native cycle update={} cycle={} motion={} loop_state={} phase={:.3f}",
       trace.frame, trace.idle_loops, trace.trial_motion, base_[track + 130], FloatAt(base_, track + 52));
 }
-void HoldIdleRoot(uint8_t* base, uint32_t slot) {
+void HoldIdleRoot(uint8_t* base, PPCContext& ctx, uint32_t slot) {
   if (slot || !trace.idle_actor_active || !trace.camera_hold_active ||
       !Readable(base, kPlayers, 152) || base[kPlayers + 4] != trace.idle_bank_slot) return;
   uint32_t phase{}, motion{};
@@ -777,11 +891,84 @@ void HoldIdleRoot(uint8_t* base, uint32_t slot) {
         FloatAt(base, 0x83426FD0), FloatAt(base, 0x83426FD4), FloatAt(base, 0x83426FD8),
         FloatAt(base, kPlayers + 12), FloatAt(base, kPlayers + 16), FloatAt(base, kPlayers + 20));
   }
-  // The original root routine still runs once and consumes its delta. Do
-  // not restore the consumed delta or write the actor's world transform.
+  // Consume native animation roots exactly once. The bounded controller is
+  // the sole translation owner; no native root travel is added to its step.
   REX_STORE_U32(0x83426FD0, 0);
   REX_STORE_U32(0x83426FD4, 0);
   REX_STORE_U32(0x83426FD8, 0);
+  if (!trace.movement.active || trace.movement_root_frame == trace.frame) return;
+  trace.movement_root_frame = trace.frame;
+  const double now = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (now >= trace.camera_hold_until) { RestoreIdleActor(base); return; }
+  uint32_t native{};
+  const bool traveling = trace.orbit_started && !trace.orbit_stopped &&
+      trace.movement_input_frame == trace.frame && trace.trial_motion == 8223 &&
+      !base[kPlayers + 56] && Read32(base, 0x834271A0 + 108, native) && native >> 16 == 8223;
+  if (trace.exploration && !ExplorationGeometryMatches(base)) {
+    Log("OWPROBE exploration: terrain ownership changed update={}", trace.frame);
+    RestoreIdleActor(base);
+    return;
+  }
+  float x = trace.movement_pose[0], z = trace.movement_pose[2];
+  const float before_x = x, before_z = z;
+  if (!trace.movement.Step(x, z, traveling ? trace.movement_x : 0,
+          traveling ? trace.movement_y : 0, trace.orbit.yaw, trace.movement_seconds)) {
+    Log("OWPROBE movement: rejected update={}; invalid or externally displaced pose", trace.frame);
+    RestoreIdleActor(base);
+    return;
+  }
+  float y = std::bit_cast<float>(trace.movement_original_pose[1]);
+  bool blocked = false;
+  if (trace.exploration) {
+    float projected{};
+    blocked = !trace.terrain.Supported(x,z,trace.movement_pose[1],projected);
+    // Sweep foot and torso against triangles present in the stage terrain.
+    for (float lift : {.2f,.9f}) {
+      TerrainPoint from{before_x,trace.movement_pose[1]+lift,before_z};
+      TerrainPoint to{x,projected+lift,z};
+      blocked |= trace.terrain.Clip(from,to) < 1;
+    }
+    if (!blocked) {
+      // Copy registers so this extra query cannot alter the root caller's ABI.
+      // r6=1 bypasses activity-specific constant-height overrides.
+      auto call = ctx;
+      call.r3.u64 = 0x82E2DB50;
+      call.r6.u64 = 1;
+      call.f1.f64 = x; call.f2.f64 = z; call.f3.f64 = .1;
+      __imp__sub_825BEE88(call,base);
+      y = float(call.f1.f64);
+      blocked = !std::isfinite(y) || std::abs(y-projected) > .12f ||
+          std::abs(y-trace.movement_pose[1]) > .15f || y < trace.terrain.minimum_y;
+    }
+    if (blocked) { x = before_x; z = before_z; y = trace.movement_pose[1]; }
+    if (trace.frame % 30 == 0)
+      Log("OWPROBE exploration: ground update={} blocked={} native_y={:.4f} projected_y={:.4f} xyz=({:.4f},{:.4f},{:.4f})",
+          trace.frame, blocked, y, projected, x,y,z);
+  }
+  trace.movement_pose = {x,y,z};
+  if (traveling) trace.movement_facing = trace.movement.Facing();
+  REX_STORE_U32(kPlayers + 12, std::bit_cast<uint32_t>(x));
+  REX_STORE_U32(kPlayers + 16, std::bit_cast<uint32_t>(y));
+  REX_STORE_U32(kPlayers + 20, std::bit_cast<uint32_t>(z));
+  if (traveling) REX_STORE_U32(kPlayers + 24, trace.movement.Facing());
+  if (trace.frame % 15 == 0)
+    Log("OWPROBE movement: step update={} traveling={} xyz=({:.4f},{:.4f},{:.4f}) delta=({:.5f},{:.5f}) radius={:.4f} facing={} dt={:.5f}",
+        trace.frame, traveling, x, FloatAt(base, kPlayers + 16), z, x - before_x, z - before_z,
+        std::hypot(x - trace.movement.anchor_x, z - trace.movement.anchor_z),
+        trace.movement.Facing(), trace.movement_seconds);
+}
+void CommitIdleMovement(uint8_t* base, uint32_t slot) {
+  uint32_t phase{}, motion{};
+  if (slot || !trace.movement.active || !trace.idle_actor_active ||
+      !ReferencePictorial(base,phase) || phase != 7 ||
+      !Read32(base,kPlayers+52,motion) || motion >> 16 != trace.trial_motion ||
+      base[kPlayers+4] != trace.idle_bank_slot) return;
+  // Native 82510218 can subtract a loop-origin offset even with zero root
+  // samples. Commit the owned pose after it runs, before rig evaluation.
+  for (uint32_t i=0; i<3; ++i)
+    REX_STORE_U32(kPlayers+12+i*4,std::bit_cast<uint32_t>(trace.movement_pose[i]));
+  REX_STORE_U32(kPlayers+24,trace.movement_facing);
 }
 }  // namespace doax2::open_world
 
@@ -1167,12 +1354,18 @@ OrbitCameraScope::OrbitCameraScope(uint8_t* base, uint32_t object) {
       return;
     }
     trace.orbit_started = true;
+    trace.orbit.exploration = trace.exploration;
+    if (trace.exploration) {
+      trace.orbit.radius = std::clamp(trace.orbit.radius,1.5f,6.f);
+      trace.orbit.pitch = std::clamp(trace.orbit.pitch,.05f,1.f);
+    }
+    trace.orbit_target_anchor = aim;
     trace.orbit_time = now;
     Log("OWPROBE orbit: begin update={} object={:08X} radius={:.3f} target=({:.3f},{:.3f},{:.3f}) yaw={:.3f} pitch={:.3f}",
         trace.frame, object, trace.orbit.radius, aim[0], aim[1], aim[2], trace.orbit.yaw, trace.orbit.pitch);
   }
   if (trace.orbit_frame != trace.frame) {
-    float x = 0, y = 0;
+    float x = 0, y = 0, zoom = 0;
     DWORD foreground_process{};
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
     if (auto* runtime = rex::Runtime::instance();
@@ -1184,17 +1377,42 @@ OrbitCameraScope::OrbitCameraScope(uint8_t* base, uint32_t object) {
                 rex::input::X_INPUT_GAMEPAD_START | rex::input::X_INPUT_GAMEPAD_BACK))) {
           x = float(int16_t(pad.gamepad.thumb_rx)) / 32768.0f;
           y = float(int16_t(pad.gamepad.thumb_ry)) / 32768.0f;
+          zoom = (float(pad.gamepad.right_trigger)-float(pad.gamepad.left_trigger))/255.f;
+          // Keyboard zoom is focus-gated with the controller sample.
+          if (GetAsyncKeyState('E') & 0x8000) zoom += 1;
+          if (GetAsyncKeyState('Q') & 0x8000) zoom -= 1;
         }
       }
     }
     trace.orbit.Step(x, y, now - trace.orbit_time);
+    trace.orbit.Zoom(zoom, now - trace.orbit_time);
     trace.orbit_time = now;
     trace.orbit_frame = trace.frame;
     if (trace.frame % 30 == 0)
       Log("OWPROBE orbit: update={} stick=({:.3f},{:.3f}) yaw={:.3f} pitch={:.3f}",
           trace.frame, x, y, trace.orbit.yaw, trace.orbit.pitch);
   }
-  const auto eye = trace.orbit.Eye();
+  trace.orbit.target = trace.orbit_target_anchor;
+  if (trace.movement.active) {
+    trace.orbit.target[0] += FloatAt(base, kPlayers + 12) - trace.movement.anchor_x;
+    trace.orbit.target[2] += FloatAt(base, kPlayers + 20) - trace.movement.anchor_z;
+    if (trace.exploration)
+      trace.orbit.target = {trace.movement_pose[0],trace.movement_pose[1]+.85f,trace.movement_pose[2]};
+  }
+  auto eye = trace.orbit.Eye();
+  if (trace.exploration && trace.movement.active) {
+    // Terrain contains some vertical faces, but may omit decorative props.
+    // Retract immediately on a ray hit; leave a small clearance before it.
+    const float hit = trace.terrain.Clip(trace.orbit.target,eye);
+    // Keep eye distinct from target even when a surface is very close.
+    const float fraction = std::max(.05f/trace.orbit.radius,
+        hit - (hit < 1 ? .15f/trace.orbit.radius : 0.f));
+    for (uint32_t i=0;i<3;++i)
+      eye[i] = trace.orbit.target[i]+(eye[i]-trace.orbit.target[i])*fraction;
+    if (trace.frame % 60 == 0)
+      Log("OWPROBE exploration: camera update={} radius={:.3f} fraction={:.3f} yaw={:.3f} pitch={:.3f}",
+          trace.frame,trace.orbit.radius,fraction,trace.orbit.yaw,trace.orbit.pitch);
+  }
   base_ = base;
   object_ = object;
   for (uint32_t i = 0; i < 3; ++i) {
@@ -1457,7 +1675,9 @@ REX_HOOK_RAW(sub_824B9EA0) {
   const bool long_actor_trial = REXCVAR_GET(doax2_open_world_pictorial_long_actor_trial) ||
                                 REXCVAR_GET(doax2_open_world_pictorial_orbit_trial) ||
                                 REXCVAR_GET(doax2_open_world_pictorial_idle_bank_trial) || idle_trial;
-  const double duration = long_actor_trial ? 15.0 : 5.0;
+  const double duration = REXCVAR_GET(doax2_open_world_pictorial_movement_trial)
+      ? (REXCVAR_GET(doax2_open_world_pictorial_exploration) ? 300.0 : 120.0)
+      : (long_actor_trial ? 15.0 : 5.0);
   const bool actor_trial = REXCVAR_GET(doax2_open_world_pictorial_actor_trial) || long_actor_trial;
   const bool camera_trial = REXCVAR_GET(doax2_open_world_pictorial_camera_trial) || actor_trial;
   const bool lifetime_trial = REXCVAR_GET(doax2_open_world_pictorial_lifetime_trial) || camera_trial;

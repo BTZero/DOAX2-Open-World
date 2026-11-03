@@ -9,7 +9,8 @@ struct PPCContext;
 // predicate results, and ScriptCommandScope only observes native commands.
 namespace doax2::open_world {
 void MaintainIdleBank(uint8_t* base, PPCContext& ctx);
-void HoldIdleRoot(uint8_t* base, uint32_t slot);
+void HoldIdleRoot(uint8_t* base, PPCContext& ctx, uint32_t slot);
+void CommitIdleMovement(uint8_t* base, uint32_t slot);
 struct IdleUpdateScope {
   IdleUpdateScope(uint8_t* base, uint32_t slot);
   ~IdleUpdateScope();

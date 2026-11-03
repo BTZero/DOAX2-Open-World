@@ -51,6 +51,8 @@ if ($Mode -ne 'Baseline') {
     $arguments += '--doax2_open_world_pictorial_idle_bank_trial=' + ($Mode -eq 'PictorialIdleBankTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_pictorial_idle_trial=' + ($Mode -eq 'PictorialIdleTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_pictorial_movement_trial=' + ($Mode -eq 'PictorialMovementTrial').ToString().ToLowerInvariant()
+    $arguments += '--doax2_open_world_pictorial_movement_displacement=' + ($Mode -eq 'PictorialMovementTrial').ToString().ToLowerInvariant()
+    $arguments += '--doax2_open_world_pictorial_exploration=' + ($Mode -eq 'PictorialMovementTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_motion_research=' + ($Mode -eq 'MotionResearch').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_terrain_trial=' + ($Mode -eq 'TerrainTrial').ToString().ToLowerInvariant()
     $arguments += '--doax2_open_world_relaxation_hold_trial=' + ($Mode -eq 'RelaxationHoldTrial').ToString().ToLowerInvariant()

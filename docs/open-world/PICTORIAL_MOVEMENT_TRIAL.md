@@ -1,4 +1,100 @@
-# Pictorial movement trial: animation binding stage
+# Pictorial movement and exploration trial
+
+## Five-minute grounded exploration
+
+`Launch Pictorial Movement Trial.cmd` now enables default-off, restart-required
+`doax2_open_world_pictorial_exploration` alongside movement. It holds the
+coordinated script/camera session for 300 seconds and expands the radial limit
+from 1.25 to 20 guest units. Other launch modes disable exploration. For a clean
+animation-bank admission, launch a fresh process and play scene 58 directly:
+Virtual Pictorials, Kasumi, Edit Playlist, move right ten thumbnails from the
+first Kasumi clip to the daylight beach thumbnail, then Y/R to view it.
+Playing another clip first can populate all spare banks; the trial then declines.
+
+Controls: left stick or WASD moves relative to the camera; right stick or IJKL
+rotates the camera through a full turn, with bounded pitch; LT/RT or Q/E zooms
+in/out between 1.5 and 6 guest units. The camera follows actor height and targets
+0.85 units above the owned root. B/Backspace retains the native early-exit path.
+Focus loss/disconnect neutralizes control input; the wall-clock deadline continues.
+
+Exploration copies and validates the current stage's terrain at admission and
+checks its buffer identities/counts during movement. Candidate steps require
+support under a 0.15-unit footprint, the spawn's raw triangle flags, slope at
+most 0.6, at most 0.15 units of height change, and height no lower than 0.5 units
+below spawn. These are conservative experiment limits, not decoded material or
+water classifications. Accepted steps also query native `825BEE88`, bypassing
+activity height overrides, and require agreement within 0.12 units of projected
+terrain. Unsupported steps stay at the last owned pose so input can retreat.
+
+Foot/torso segment tests reject intersections in the terrain mesh. Camera rays
+retract before terrain intersections. Decorative props and other collision
+systems may be absent from that mesh; complete obstacle collision and camera
+clearance are not established. This is a larger bounded exploration experiment,
+not unrestricted access to every visible surface.
+
+The native root routine can subtract a loop-origin offset even after root
+samples are zeroed. A scoped post-call commit now reapplies the owned pose
+before rig evaluation to prevent that secondary displacement. Original native
+root services still run; scene/bank ownership gates protect the commit.
+
+Build/link and focused finite-hold, orbit, bounded-movement and terrain-guard
+host checks passed. The host checks cover the five-minute deadline, full orbit,
+zoom clamps, expanded radial boundary, footprint edges, slopes, flags, height
+discontinuities and two-sided triangle obstruction. Runtime findings are recorded
+below as available; these checks alone do not establish visual foot contact,
+complete collision, cleanup or a five-minute runtime soak.
+
+### Runtime validation and resume checkpoint
+
+Capture `pictorialmovementtrial-20261102-235955-043.log` admitted scene 58 at
+update 1832 with 943 vertices, 1729 triangles and spawn flags 1. The hold released
+at update 10816 after **300.033 seconds**, with eligibility retained. Original
+pose and native motion were restored at that update. The spare bank released
+at 11761, and the original selector subsequently returned to phase 1.
+`tools/check_exploration_trial.py` passed: **287 accepted native ground samples,
+maximum observed radius 7.4556, 12 blocked samples**, stable consecutive neutral
+poses, timed release, restoration, bank release and selector return. Full yaw,
+pitch and keyboard zoom were exercised in the live session; captures showed
+the actor standing on the beach and the camera following the larger route.
+The full 20-unit boundary was host-tested but not reached in this runtime run.
+The normal diagnostics-disabled `out/game` target also compiled and linked.
+
+Resume here: run a fresh Movement Trial process, enter the reference thumbnail
+directly, then inspect movement around the rock/material boundaries, foot
+contact during jog turns, camera obstruction and early exit. Geometry guards
+can intentionally stop on flags differing from spawn; decode those flags and
+the remaining native obstacle system before relaxing them. Disconnect/reconnect,
+focus loss, save-hash comparison, repeated entry/exit and broader performance
+comparison remain outstanding. A final small camera guard ensures eye and
+target never coincide when a ray hit lies very close to the target; the final
+probe was rebuilt after the soak. No generated code, game assets, saves, logs
+or captures are included in the commit. Existing SDK working-tree changes
+remain separate from this exploration checkpoint.
+
+## Earlier checkpoint: bounded displacement and two-minute trial
+
+The movement launcher now enables camera-relative planar displacement, analog
+speed, bounded facing changes and a 1.25 guest-unit radial limit. The user
+confirmed being able to run around a small area, estimated visually as 10x10;
+that estimate is not a measurement of guest coordinate scale. Capture
+`pictorialmovementtrial-20261102-222619-684.log` reached radius 1.2500 and
+recorded pose restoration at update 937 and native animation restoration at
+938. The process closed before spare-bank release was observed in that capture.
+
+At the user's request, the movement trial now holds for **120 seconds** instead
+of 15. The other trial durations retain their previous values. The shared
+finite-hold policy accepts at most 120 seconds, retains its ownership-loss
+release, and releases at the deadline without restarting. The script, camera
+and movement use the same deadline. Host checks cover holding past 15 seconds,
+the two-minute deadline and early ownership loss; runtime validation of the
+longer session remains pending.
+
+Movement still writes the original fixed Y coordinate. Native rig samples
+already show changing terrain heights inside this patch. Ground following and
+obstacle/edge rejection must be established before expanding the travel radius.
+The stationary capture checker below applies only to earlier binding captures.
+
+The remainder of this document records the earlier animation-binding stages.
 
 Work resumed at the user's request after the idle checkpoint. The separate
 `Launch Pictorial Movement Trial.cmd` enables default-off, restart-required
