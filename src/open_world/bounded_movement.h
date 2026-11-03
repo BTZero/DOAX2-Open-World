@@ -10,7 +10,8 @@ namespace doax2::open_world {
 // before committing it; the radial bound alone establishes no terrain contract.
 struct BoundedMovement {
   static constexpr float kRadius = 1.25f;
-  static constexpr float kSpeed = 0.75f;
+  static constexpr float kSpeed = 3.f;
+  static constexpr float kMaximumRadius = 30000.f;
   static constexpr float kTau = 2 * std::numbers::pi_v<float>;
   float anchor_x{}, anchor_z{}, heading{};
   float radius = kRadius;
@@ -29,7 +30,7 @@ struct BoundedMovement {
     if (!active || !std::isfinite(x) || !std::isfinite(z) ||
         !std::isfinite(stick_x) || !std::isfinite(stick_y) ||
         !std::isfinite(camera_yaw) || !std::isfinite(seconds) || seconds < 0 ||
-        !std::isfinite(radius) || radius <= 0 || radius > 20 ||
+        !std::isfinite(radius) || radius <= 0 || radius > kMaximumRadius ||
         std::hypot(x - anchor_x, z - anchor_z) > radius + 0.001f) return false;
     const float magnitude = std::hypot(stick_x, stick_y);
     if (magnitude <= 0.18f) return true;

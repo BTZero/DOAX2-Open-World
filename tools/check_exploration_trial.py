@@ -10,7 +10,8 @@ def check_capture(text):
         "exploration: rejected", "exploration: terrain ownership changed",
         "movement: rejected", "idle actor: ownership changed")):
         raise ValueError("Exploration rejection or ownership loss in capture")
-    if "radius=20 duration=300" not in text:
+    admission = re.search(r"exploration: admitted .*?radius=([\d.]+) duration=300",text)
+    if not admission:
         raise ValueError("No five-minute expanded terrain admission")
     ground = re.findall(
         r"exploration: ground update=\d+ blocked=(true|false) native_y=([-\d.]+) projected_y=([-\d.]+)", text)
@@ -20,7 +21,7 @@ def check_capture(text):
     steps = re.findall(
         r"movement: step update=\d+ traveling=(true|false) xyz=\(([^)]+)\).*?radius=([-\d.]+)", text)
     radii = [float(radius) for _, _, radius in steps]
-    if not radii or max(radii) <= 1.25 or max(radii) > 20.001:
+    if not radii or max(radii) <= 1.25 or max(radii) > float(admission.group(1))+.001:
         raise ValueError("Need travel beyond the old radius and within the new radius")
     previous = None
     for traveling, xyz, _ in steps:

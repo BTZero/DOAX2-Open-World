@@ -160,6 +160,10 @@ struct Trace {
   float idle_resume_phase{};
   uint32_t idle_loop_command{}, idle_loops{};
   uint32_t trial_motion = 270;
+  std::vector<uint32_t> idle_variants;
+  uint32_t selected_idle = 270;
+  double idle_variant_time{};
+  bool idle_cycle_down{};
   uint64_t movement_input_frame = ~uint64_t{0};
   uint64_t movement_root_frame = ~uint64_t{0};
   BoundedMovement movement;
@@ -168,6 +172,8 @@ struct Trace {
   TerrainPoint movement_pose{};
   uint32_t movement_facing{};
   bool exploration{};
+  TerrainRejection contact_reason=TerrainRejection::None;
+  bool contact_sliding{}, contact_blocked{};
   std::array<uint32_t, 4> movement_original_pose{};
   float movement_x{}, movement_y{};
   double movement_time{}, movement_seconds{};
@@ -542,6 +548,18 @@ bool IdleResourcesReady(const uint8_t* base) {
       Read32(base, loop + 8, loop_tail) && loop_tail == 0x000A0003 &&
       Readable(base, loop + 12, 2) && base[loop + 12] == 0 && base[loop + 13] == 255;
 }
+bool IdleVariantReady(const uint8_t* base, uint32_t id, uint32_t& frames) {
+  uint32_t clips{},clip{},header{},wrapper{},scripts{},command{},first{},second{};
+  if (!Read32(base,kMotionBanks+20+trace.idle_bank_slot*64,clips) ||
+      !Read32(base,clips+id*4,clip) || !Read32(base,clip,header) ||
+      header >> 16 != 60 || (header & 65535) <= 5 || (header & 65535) > 4096 ||
+      !Read32(base,kMotionBanks+16+trace.idle_bank_slot*64,wrapper) ||
+      !Read32(base,wrapper,scripts) || !Read32(base,scripts+id*4,command) ||
+      !Read32(base,command,first) || first != id ||
+      !Read32(base,command+4,second) || second != 0x00010002) return false;
+  frames=header & 65535;
+  return true;
+}
 bool JogResourcesReady(const uint8_t* base) {
   uint32_t clips{}, clip{}, header{}, wrapper{}, scripts{}, command{}, first{}, second{};
   // Shared motion 8223 uses index 31 independently of the character bank.
@@ -563,6 +581,7 @@ void UpdateMovementBinding(uint8_t* base) {
   trace.movement_seconds = std::clamp(now - trace.movement_time, 0.0, 0.05);
   trace.movement_time = now;
   float x = 0, y = 0;
+  bool cycle_down=false;
   DWORD foreground_process{};
   GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
   if (auto* runtime = rex::Runtime::instance();
@@ -575,24 +594,46 @@ void UpdateMovementBinding(uint8_t* base) {
         const auto normalize = [](int16_t v) { return float(v) / (v < 0 ? 32768.0f : 32767.0f); };
         x = normalize(int16_t(pad.gamepad.thumb_lx));
         y = normalize(int16_t(pad.gamepad.thumb_ly));
+        cycle_down = (uint16_t(pad.gamepad.buttons) & rex::input::X_INPUT_GAMEPAD_X) != 0;
       }
     }
   }
   trace.movement_x = x;
   trace.movement_y = y;
+  const bool cycle_pressed=cycle_down && !trace.idle_cycle_down;
+  trace.idle_cycle_down=cycle_down;
   // Hysteresis avoids repeated rebinds near the radial deadzone. Travel
   // additionally waits for the native jog binder and the orbit to be ready.
   const float magnitude = std::min(1.0f, std::hypot(x, y));
-  const uint32_t desired = magnitude > (trace.trial_motion == 8223 ? 0.18f : 0.25f) ? 8223 : 270;
+  const bool moving=magnitude > (trace.trial_motion == 8223 ? 0.18f : 0.25f);
+  if (!moving && trace.trial_motion != 8223 && !base[kPlayers+56] && trace.idle_variants.size()>1) {
+    uint32_t frames{},native{};
+    const bool near_end=IdleVariantReady(base,trace.selected_idle,frames) &&
+        Read32(base,0x834271A0+108,native) && native >> 16 == trace.selected_idle &&
+        FloatAt(base,0x834271A0+52) >= float(frames)-2;
+    if (cycle_pressed || (now-trace.idle_variant_time >= 8 && near_end)) {
+      const auto found=std::find(trace.idle_variants.begin(),trace.idle_variants.end(),trace.selected_idle);
+      const size_t index=found == trace.idle_variants.end() ? 0 : size_t(found-trace.idle_variants.begin());
+      trace.selected_idle=trace.idle_variants[(index+1)%trace.idle_variants.size()];
+    }
+  }
+  const uint32_t desired = moving ? 8223 : trace.selected_idle;
   if (desired == trace.trial_motion || base[kPlayers + 56]) return;
   if (desired == 8223 && !JogResourcesReady(base)) {
     RestoreIdleActor(base);
     Log("OWPROBE movement binding: rejected update={}; shared jog resource mismatch", trace.frame);
     return;
   }
+  uint32_t idle_frames{};
+  if (desired != 8223 && !IdleVariantReady(base,desired,idle_frames)) {
+    RestoreIdleActor(base);
+    Log("OWPROBE idle variant: rejected update={} motion={}; resource changed",trace.frame,desired);
+    return;
+  }
   uint32_t pair{};
   if (!Read32(base, kPlayers + 52, pair)) return;
   trace.trial_motion = desired;
+  trace.idle_variant_time=now;
   REX_STORE_U32(kPlayers + 52, (desired << 16) | (pair & 0xFFFF));
   base[kPlayers + 56] = 1;
   base[kPlayers + 60] = 0;
@@ -641,7 +682,19 @@ bool LoadExplorationTerrain(const uint8_t* base) {
   if (!trace.terrain.Surface(trace.movement_pose[0], trace.movement_pose[2], trace.movement_pose[1], spawn) ||
       std::abs(spawn.height - trace.movement_pose[1]) > .15f || spawn.slope > .6f) return false;
   trace.terrain.admitted_flags = spawn.flags;
-  trace.terrain.minimum_y = spawn.height - .5f;
+  // Cover all loaded terrain, including material seams and lower ground.
+  // Footprint, slope, discontinuity, native-height and obstruction gates remain.
+  trace.terrain.match_flags = false;
+  trace.terrain.minimum_y = spawn.height;
+  trace.movement.radius = BoundedMovement::kRadius;
+  for (const auto& triangle : trace.terrain.triangles) {
+    for (const auto& vertex : {triangle.a,triangle.b,triangle.c}) {
+      trace.movement.radius = std::max(trace.movement.radius,
+          std::hypot(vertex[0]-trace.movement.anchor_x,vertex[2]-trace.movement.anchor_z)+.001f);
+      trace.terrain.minimum_y = std::min(trace.terrain.minimum_y,vertex[1]);
+    }
+  }
+  if (trace.movement.radius > BoundedMovement::kMaximumRadius) return false;
   float height{};
   return trace.terrain.Supported(trace.movement_pose[0], trace.movement_pose[2], spawn.height, height);
 }
@@ -673,6 +726,7 @@ void StartIdleActor(uint8_t* base) {
             std::bit_cast<float>(trace.movement_original_pose[2]), trace.movement_original_pose[3])) return;
     trace.movement_time = std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+    trace.idle_variant_time=trace.movement_time;
     trace.movement_pose = {FloatAt(base,kPlayers+12),FloatAt(base,kPlayers+16),FloatAt(base,kPlayers+20)};
     trace.movement_facing = trace.movement_original_pose[3];
     trace.exploration = REXCVAR_GET(doax2_open_world_pictorial_exploration);
@@ -682,10 +736,9 @@ void StartIdleActor(uint8_t* base) {
         Log("OWPROBE exploration: rejected update={}; terrain admission failed", trace.frame);
         return;
       }
-      trace.movement.radius = 20;
-      Log("OWPROBE exploration: admitted update={} vertices={} triangles={} flags={} minimum_y={:.4f} radius=20 duration=300",
+      Log("OWPROBE exploration: admitted update={} vertices={} triangles={} flags={} minimum_y={:.4f} radius={:.4f} duration=300",
           trace.frame, trace.terrain_vertex_count, trace.terrain_triangle_count,
-          trace.terrain.admitted_flags, trace.terrain.minimum_y);
+          trace.terrain.admitted_flags, trace.terrain.minimum_y, trace.movement.radius);
     }
     Log("OWPROBE movement: begin update={} anchor=({:.4f},{:.4f},{:.4f}) facing={} radius={} speed={} exploration={}",
         trace.frame, FloatAt(base, kPlayers + 12), FloatAt(base, kPlayers + 16), FloatAt(base, kPlayers + 20),
@@ -792,6 +845,12 @@ void MaintainIdleBank(uint8_t* base, PPCContext& ctx) {
     trace.idle_bank_ready = true;
     uint32_t clips{};
     Read32(base, kMotionBanks + 20 + slot * 64, clips);
+    for (uint32_t id : {270u,271u,272u,273u,274u,275u,541u,542u,543u,544u,545u,546u,547u}) {
+      uint32_t frames{};
+      const bool accepted=IdleVariantReady(base,id,frames);
+      if (accepted) trace.idle_variants.push_back(id);
+      Log("OWPROBE idle variant: catalog update={} motion={} accepted={} frames={}",trace.frame,id,accepted,frames);
+    }
     Log("OWPROBE idle bank: ready update={} slot={} clips={:08X}; actor binding unchanged", trace.frame, slot, clips);
     for (uint32_t id = 270; id <= 275; ++id) {
       uint32_t clip{}, header{};
@@ -922,29 +981,52 @@ void HoldIdleRoot(uint8_t* base, PPCContext& ctx, uint32_t slot) {
   bool blocked = false;
   if (trace.exploration) {
     float projected{};
-    blocked = !trace.terrain.Supported(x,z,trace.movement_pose[1],projected);
-    // Sweep foot and torso against triangles present in the stage terrain.
-    for (float lift : {.2f,.9f}) {
-      TerrainPoint from{before_x,trace.movement_pose[1]+lift,before_z};
-      TerrainPoint to{x,projected+lift,z};
-      blocked |= trace.terrain.Clip(from,to) < 1;
-    }
-    if (!blocked) {
+    TerrainRejection reason=TerrainRejection::None;
+    const auto validate = [&](TerrainPoint& candidate) {
+      if (std::hypot(candidate[0]-trace.movement.anchor_x,candidate[2]-trace.movement.anchor_z) >
+          trace.movement.radius+.00001f) return false;
+      if (!trace.terrain.Supported(candidate[0],candidate[2],trace.movement_pose[1],projected,&reason)) return false;
+      // Sweep foot and torso against triangles present in the stage terrain.
+      for (float lift : {.2f,.9f}) {
+        TerrainPoint from{before_x,trace.movement_pose[1]+lift,before_z};
+        TerrainPoint to{candidate[0],projected+lift,candidate[2]};
+        if (trace.terrain.Clip(from,to) < 1) { reason=TerrainRejection::Obstruction; return false; }
+      }
       // Copy registers so this extra query cannot alter the root caller's ABI.
       // r6=1 bypasses activity-specific constant-height overrides.
       auto call = ctx;
       call.r3.u64 = 0x82E2DB50;
       call.r6.u64 = 1;
-      call.f1.f64 = x; call.f2.f64 = z; call.f3.f64 = .1;
+      call.f1.f64 = candidate[0]; call.f2.f64 = candidate[2]; call.f3.f64 = .1;
       __imp__sub_825BEE88(call,base);
-      y = float(call.f1.f64);
-      blocked = !std::isfinite(y) || std::abs(y-projected) > .12f ||
-          std::abs(y-trace.movement_pose[1]) > .15f || y < trace.terrain.minimum_y;
-    }
-    if (blocked) { x = before_x; z = before_z; y = trace.movement_pose[1]; }
+      candidate[1] = float(call.f1.f64);
+      if (!std::isfinite(candidate[1]) || std::abs(candidate[1]-projected) > .12f ||
+          std::abs(candidate[1]-trace.movement_pose[1]) > .15f || candidate[1] < trace.terrain.minimum_y) {
+        reason=TerrainRejection::NativeHeight;
+        return false;
+      }
+      return true;
+    };
+    TerrainPoint proposed{x,trace.movement_pose[1],z};
+    const auto requested=proposed;
+    blocked=!validate(proposed);
+    const auto original_reason=reason;
+    const bool sliding=blocked && SlidePlanar(trace.movement_pose,proposed,validate);
+    if (blocked && !sliding) proposed=trace.movement_pose;
+    blocked=blocked && !sliding;
+    x=proposed[0]; y=proposed[1]; z=proposed[2];
     if (trace.frame % 30 == 0)
       Log("OWPROBE exploration: ground update={} blocked={} native_y={:.4f} projected_y={:.4f} xyz=({:.4f},{:.4f},{:.4f})",
           trace.frame, blocked, y, projected, x,y,z);
+    const bool contact_changed=original_reason != trace.contact_reason ||
+        sliding != trace.contact_sliding || blocked != trace.contact_blocked;
+    if (contact_changed || (trace.frame % 30 == 0 && original_reason != TerrainRejection::None))
+      Log("OWPROBE exploration: contact update={} reason={} sliding={} blocked={} requested=({:.4f},{:.4f}) final=({:.4f},{:.4f})",
+          trace.frame,RejectionName(original_reason),sliding,blocked,
+          requested[0],requested[2],x,z);
+    trace.contact_reason=original_reason;
+    trace.contact_sliding=sliding;
+    trace.contact_blocked=blocked;
   }
   trace.movement_pose = {x,y,z};
   if (traveling) trace.movement_facing = trace.movement.Facing();
@@ -1403,7 +1485,7 @@ OrbitCameraScope::OrbitCameraScope(uint8_t* base, uint32_t object) {
   if (trace.exploration && trace.movement.active) {
     // Terrain contains some vertical faces, but may omit decorative props.
     // Retract immediately on a ray hit; leave a small clearance before it.
-    const float hit = trace.terrain.Clip(trace.orbit.target,eye);
+    const float hit = trace.terrain.CameraClip(trace.orbit.target,eye);
     // Keep eye distinct from target even when a surface is very close.
     const float fraction = std::max(.05f/trace.orbit.radius,
         hit - (hit < 1 ? .15f/trace.orbit.radius : 0.f));

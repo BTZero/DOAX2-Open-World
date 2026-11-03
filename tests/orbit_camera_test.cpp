@@ -39,15 +39,23 @@ int main() {
     OrbitCamera free;
     Check(free.Begin({0,1,3},{0,0,0}));
     free.exploration = true;
+    auto direction = free;
+    direction.Step(1,0,.1);
+    Check(direction.target[0]-direction.Eye()[0] > 0); // RS right looks right
+    direction.Step(-1,0,.1);
+    Check(std::abs(direction.yaw) < .00001f);
+    const auto forward_y=direction.target[1]-direction.Eye()[1];
+    direction.Step(0,1,.1);
+    Check(direction.target[1]-direction.Eye()[1] > forward_y); // RS up looks up
     for (int i=0;i<300;++i) free.Step(1,1,1.0/30);
     Check(std::abs(free.yaw) > .6f && std::abs(free.yaw) <= 3.142f);
-    Check(free.pitch == 1.f);
+    Check(free.pitch == .05f);
     free.Zoom(1,100);
     Check(free.radius < 3.5f); // a stall cannot jump straight to max zoom
     for (int i=0;i<300;++i) free.Zoom(1,.1);
     Check(free.radius == 6);
     for (int i=0;i<300;++i) { free.Zoom(-1,.1); free.Step(0,-1,.1); }
-    Check(free.radius == 1.5f && free.pitch == .05f);
+    Check(free.radius == 1.5f && free.pitch == 1.f);
     std::cout << "Orbit camera checks passed\n";
     return 0;
   } catch (const std::exception& e) {

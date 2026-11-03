@@ -1,5 +1,101 @@
 # Pictorial movement and exploration trial
 
+## Paused checkpoint: 4x speed, idle variants and missing boulder collision
+
+The user confirmed that **4x base speed feels good**. Current speed is
+**3.0 guest units/second**, relative to the original 0.75. Keep this speed when
+resuming. Right-stick right turns the view right, and up now looks up by
+decreasing the eye-around-target pitch. The five-minute duration remains.
+The loaded-terrain extent, rather than the earlier 20-unit radius, limits
+travel; matching the spawn material and the spawn-minus-0.5 height floor are
+disabled. Earlier sections below record historical settings and validation.
+
+Idle variation is implemented but still needs a fresh live validation run.
+The bank catalog checks 270..275 and 541..547, admitting only real 60-rate clips
+longer than the five-frame fallback and direct command streams beginning with
+the requested clip ID and the verified command prefix. Known real 270..275
+provide six candidate idles. Captured 541/543 streams alias other clips and
+must not be treated as verified direct bindings; runtime admission skips
+incompatible entries. While stationary, X/F cycles accepted idles. Automatic
+cycling waits at least eight seconds and approaches the current clip's end.
+Jogging interrupts idle variation, and stopping returns to the selected idle.
+Native binding, root suppression, loop policy and restoration remain in use.
+
+The latest code compiled and linked; all four focused host checks passed,
+including 4x wall-time movement and right/up camera direction checks. Successful
+live cycling of every admitted idle, automatic idle timing and return from jog
+are still pending. The attempted validation was interrupted before establishing
+that evidence. No new five-minute soak is claimed for this revision.
+
+**User-reported defect:** large boulders have no collision. The current checks
+only use the main terrain mesh, so the earlier rock-side surface-flag rejection
+was not proof of boulder collision. No boulder fix has been implemented.
+
+Read-only follow-up confirmed that the saved scene-58 image has no populated
+secondary terrain object at `0x82E2DC90` and no additional geometry at the main
+terrain's +96/+100/+104/+108 fields. Thus simply adding that secondary object
+does not supply boulder geometry in this capture. Main vtable `0x823BFD30` has
+additional methods at +40 (`825BDBE8`), +48 (`825BF000`) and +52 (`825BF080`);
+source inspection suggests related height/contact variants, but their obstacle
+semantics and suitability for character sweeps are unverified. Do not call
+them as guessed boulder collision APIs. Stage render/prop geometry and a native
+obstacle query still need mapping. Preserve original cleanup and asset ownership.
+
+Next: capture the failing boulder's position and loaded geometry in scene 58,
+identify its native collision/render owner, add verified character and camera
+obstruction handling, then test contact from several directions. In parallel
+with that work, validate each admitted idle and jog/idle/early-exit transitions.
+The user explicitly paused development after requesting this documentation and
+push. Existing SDK submodule edits remain outside this checkpoint.
+
+## Faster travel, corrected yaw and full loaded-terrain extent
+
+At the user's request, movement speed is now **1.5 guest units/second**, twice
+the previous 0.75. Exploration yaw now subtracts right-stick X from the
+eye-around-target angle, so pushing RS right turns the view right. Vertical
+look, zoom and the five-minute duration retain their previous settings.
+
+The arbitrary 20-unit circle is replaced by the maximum horizontal distance
+from spawn to any loaded terrain vertex. This enclosing circle cannot shorten
+the loaded terrain. The footprint and native-height checks determine actual
+travel limits. Spawn-material matching is disabled, and the minimum-height
+guard follows the loaded mesh's lowest vertex instead of spawn minus 0.5.
+Thus material seams and the old spawn-relative floor no longer block otherwise
+supported travel. Slopes, abrupt height changes, missing support and mesh
+obstructions still reject or slide movement. Unloaded scenery remains outside
+the supported area; water classification and complete prop collision remain
+unresolved. Broader runtime traversal needs visual validation.
+
+## Contact and early-exit follow-up
+
+Unsupported diagonal travel now tries each planar component, largest first,
+to slide along supported terrain. Each fallback receives the same footprint,
+slope, flag, native-height, obstruction and radial validation; two rejected
+components retain the last owned pose. This does not relax surface admission
+or increase movement speed. Contact logs name the rejection and report sliding,
+blocking and requested/final XZ, including transitions between contact states.
+
+Camera obstruction now samples five parallel rays: center and a 0.12-unit
+cross around the camera line. This catches some near-camera surfaces missed
+by a center ray; it remains a sampled mesh test, not a full sphere cast or prop
+collision implementation. Four focused host checks pass, including new cases
+for off-center camera obstructions, supported axis sliding, complete rejection,
+zero travel and individual ground-rejection reasons.
+
+Runtime capture `pictorialmovementtrial-20261103-005737-369.log` admitted scene 58
+at update 1196. Boundary samples identified `surface_flags` as the reason the
+rock-side route stopped. No successful slide was captured by that run's
+once-per-second contact samples; transition logging was added afterward to
+capture short slides on the next run. Live camera retraction against a known
+obstruction also remains unverified; the new off-center geometry tests passed.
+
+With W held, Backspace neutralized intent at update 4733 and released the trial
+early at 4734 after 118.458 seconds. Original pose and animation were restored
+at 4734, the spare bank released at 4735, and selector return passed through
+phase 10 at 4751. The isolated `.dat` save file set and SHA-256 hashes matched
+the pre-run record after this exit. This verifies one early-exit case; focus
+loss, disconnect/reconnect and repeated entry/exit remain outstanding.
+
 ## Five-minute grounded exploration
 
 `Launch Pictorial Movement Trial.cmd` now enables default-off, restart-required

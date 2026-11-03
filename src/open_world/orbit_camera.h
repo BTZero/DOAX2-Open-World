@@ -33,8 +33,9 @@ struct OrbitCamera {
     const float scale = (std::min(magnitude, 1.0f) - 0.2f) / (0.8f * magnitude);
     const float step = float(std::min(seconds, 0.1)) * 0.8f;
     if (exploration) {
-      yaw = std::remainder(yaw + x * scale * step * 2, 2 * std::numbers::pi_v<float>);
-      pitch = std::clamp(pitch + y * scale * step, .05f, 1.0f);
+      // Yaw describes eye-minus-target. Decrease it to turn the view right.
+      yaw = std::remainder(yaw - x * scale * step * 2, 2 * std::numbers::pi_v<float>);
+      pitch = std::clamp(pitch - y * scale * step, .05f, 1.0f);
       return;
     }
     yaw = std::clamp(yaw + x * scale * step, yaw_anchor - 0.6f, yaw_anchor + 0.6f);
